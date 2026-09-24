@@ -149,8 +149,22 @@ MPNN_CORE_WEIGHTS = [
 ]
 LIGANDMPNN_TARBALL = "https://codeload.github.com/dauparas/LigandMPNN/tar.gz/refs/heads/main"
 
-# env 步骤的 pip 包（分析 + 折叠运行时）
-ENV_PACKAGES = ["numpy", "biopython", "prody", "transformers", "accelerate", "safetensors", "huggingface_hub"]
+# env 步骤的 pip 包（分析 + 折叠运行时）。
+# Windows pin（2026-09-24 实测）：prody 的 Windows 预编译 wheel 最高到 cp311 且只有 2.3.1 提供
+# （cp312+ 无 wheel → 源码编译需要 MSVC，违反零手动原则）；配套 numpy 1.26（2.3.1 wheel 为 numpy 1.x ABI 构建）。
+# venv Python 相应固定 3.11（torch CPU cp311 wheel 仍覆盖到最新 2.14.0，不受损）。
+
+
+def _env_packages():
+    # ml-collections / dm-tree：LigandMPNN（vendored openfold）运行时依赖（缺失→run.py 导入链断裂）。
+    # Windows pin（实测）：prody 2.3.1 的 getDataPath 依赖 pkg_resources → setuptools<81（84 已移除）。
+    pkgs = ["biopython", "scipy", "transformers", "accelerate", "safetensors",
+            "huggingface_hub", "ml-collections", "dm-tree"]
+    if os.name == "nt":
+        pkgs += ["numpy==1.26.4", "prody==2.3.1", "setuptools==80.9.0"]
+    else:
+        pkgs += ["numpy", "prody"]
+    return pkgs
 
 
 def _mirror_env():
@@ -168,7 +182,7 @@ def setup_env(data_root, force=False):
     venv_dir = os.path.join(data_root, "venv")
     py = _venv_python(data_root)
     if os.path.exists(py) and not force:
-        if _has_module(py, "torch") and _has_module(py, "transformers"):
+        if _has_module(py, "torch") and _has_module(py, "transformers") and _has_module(py, "prody"):
             return {"status": "already", "python": py, "note": "私有环境已就绪（torch + transformers 可导入）。"}
     os.makedirs(data_root, exist_ok=True)
     env = _mirror_env()
@@ -176,7 +190,7 @@ def setup_env(data_root, force=False):
 
     uv = shutil.which("uv")
     if uv:
-        ok, out, err, _rc = _run([uv, "venv", venv_dir, "--python", "3.12", "--allow-existing"], timeout=300, env=env)
+        ok, out, err, _rc = _run([uv, "venv", venv_dir, "--python", "3.11", "--allow-existing"], timeout=300, env=env)
         steps.append({"step": "uv venv", "ok": ok, "detail": (err or out)[-400:]})
         if ok:
             # torch CPU 专用源（避免拉 CUDA 大包）
@@ -187,7 +201,7 @@ def setup_env(data_root, force=False):
             steps.append({"step": "install torch (cpu)", "ok": ok_t, "detail": (err_t or out_t)[-400:]})
             if ok_t:
                 ok_p, out_p, err_p, _rc3 = _run(
-                    [uv, "pip", "install", "--python", py, *ENV_PACKAGES],
+                    [uv, "pip", "install", "--python", py, *_env_packages()],
                     timeout=900, env=env)
                 steps.append({"step": "install deps", "ok": ok_p, "detail": (err_p or out_p)[-400:]})
     else:
@@ -200,7 +214,7 @@ def setup_env(data_root, force=False):
                 timeout=1500, env=env)
             steps.append({"step": "pip install torch (cpu)", "ok": ok_t, "detail": (err_t or out_t)[-400:]})
             if ok_t:
-                ok_p, out_p, err_p, _rc3 = _run([py, "-m", "pip", "install", *ENV_PACKAGES], timeout=900, env=env)
+                ok_p, out_p, err_p, _rc3 = _run([py, "-m", "pip", "install", *_env_packages()], timeout=900, env=env)
                 steps.append({"step": "pip install deps", "ok": ok_p, "detail": (err_p or out_p)[-400:]})
 
     all_ok = all(s["ok"] for s in steps) if steps else False
@@ -213,6 +227,38 @@ def setup_env(data_root, force=False):
         result["status"] = "failed"
         result["note"] = "torch 安装后仍无法导入（请查看 steps 详情）。"
     return result
+
+
+def _patch_vendored_compat(lm_dir):
+    """对 vendored LigandMPNN 应用兼容补丁（幂等；每次 setup 都跑）。
+
+    已知问题（2026-09-24 实测；非本机特化——影响所有 numpy>=1.24 / Windows 环境）：
+    1. openfold 旧代码用 np.int/np.float/np.bool/np.object（numpy>=1.24 已移除）→ 替换为内建类型。
+    2. run.py 用 pdb[pdb.rfind("/")+1:] 取 basename——Windows 反斜杠路径下整个路径被当文件名
+       （OSError: [Errno 22] Invalid argument）→ 改用 os.path.basename 兼容形式。
+    """
+    import re
+    from pathlib import Path
+
+    applied = []
+    pat = re.compile(r"np\.(int|float|bool|object|str)(?!\d|\w)")
+    for p in Path(lm_dir).rglob("*.py"):
+        if "__pycache__" in str(p):
+            continue
+        t = p.read_text(encoding="utf-8", errors="replace")
+        t2, n = pat.subn(lambda m: m.group(1), t)
+        if n:
+            p.write_text(t2, encoding="utf-8", newline="\n")
+            applied.append(f"{p.name}: np.* x{n}")
+    run_py = os.path.join(lm_dir, "run.py")
+    if os.path.exists(run_py):
+        t = open(run_py, encoding="utf-8").read()
+        old = 'name = pdb[pdb.rfind("/") + 1 :]'
+        if old in t:
+            t = t.replace(old, 'name = os.path.basename(pdb.replace("\\\\", "/"))')
+            open(run_py, "w", encoding="utf-8", newline="\n").write(t)
+            applied.append("run.py: basename fix")
+    return applied
 
 
 def setup_mpnn(data_root, force=False):
@@ -248,6 +294,11 @@ def setup_mpnn(data_root, force=False):
                     steps.append({"step": "code", "ok": True, "detail": "installed", "dir": lm_dir})
                 except Exception as e:
                     steps.append({"step": "code", "ok": False, "detail": f"解压失败：{type(e).__name__}: {e}"})
+
+    # 1b) vendored 兼容补丁（幂等；代码新下载或已存在都跑）
+    if os.path.exists(os.path.join(lm_dir, "run.py")):
+        applied = _patch_vendored_compat(lm_dir)
+        steps.append({"step": "vendor-compat", "ok": True, "detail": "; ".join(applied) if applied else "already"})
 
     # 2) 权重
     os.makedirs(weights_dir, exist_ok=True)

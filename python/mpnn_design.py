@@ -125,26 +125,39 @@ def design_sequences(pdb, out_dir, chains=None, fixed_residues=None, num_seqs=16
 
     fasta_files = sorted(glob.glob(os.path.join(out_dir, "seqs", "*.fa")))
     designs = []
+    native = None
     for fa in fasta_files:
         for rec in _parse_fa_headers(fa):
             v = rec["values"]
+            # LigandMPNN fasta 结构：第 1 条为参数行 + 原生序列（无 id=），
+            # 其后为设计样本（含 id=、overall_confidence、seq_rec）。
+            if "id" not in v:
+                native = {"seq": rec["seq"], "length": len(rec["seq"]), "name": rec["name"]}
+                continue
             designs.append({
-                "name": rec["name"],
+                "id": int(v["id"]),
                 "seq": rec["seq"],
                 "length": len(rec["seq"]),
-                "score": v.get("score"),
-                "global_score": v.get("global_score"),
-                "seq_recovery": v.get("seq_recovery"),
                 "overall_confidence": v.get("overall_confidence"),
+                "ligand_confidence": v.get("ligand_confidence"),
+                "seq_recovery": v.get("seq_rec") if v.get("seq_rec") is not None else v.get("seq_recovery"),
                 "temperature": v.get("T"),
                 "sample": v.get("sample"),
+                "score": v.get("score"),            # 旧版字段（向后兼容）
+                "global_score": v.get("global_score"),
             })
 
     if not designs:
         return {"ok": False, "error": "run.py 成功退出但未产出序列（检查输入 PDB 是否含设计链）",
                 "out_dir": out_dir, "stdout_tail": (proc.stdout or "")[-600:]}
 
-    designs.sort(key=lambda d: (d.get("score") is not None, d.get("score") or 0), reverse=True)
+    def _rank_key(d):
+        for k in ("overall_confidence", "score"):
+            if d.get(k) is not None:
+                return d[k]
+        return -1.0
+
+    designs.sort(key=_rank_key, reverse=True)
     return {
         "status": "ok",
         "model": model,
@@ -152,9 +165,13 @@ def design_sequences(pdb, out_dir, chains=None, fixed_residues=None, num_seqs=16
         "seed": int(seed),
         "num_designs": len(designs),
         "designs": designs,
+        "native": native,
+        "fasta": fasta_files[0] if fasta_files else None,
         "out_dir": out_dir,
         "seqs_dir": os.path.join(out_dir, "seqs"),
+        "backbones_dir": os.path.join(out_dir, "backbones"),
         "runner": runner_source,
-        "note": "score=序列总 log-likelihood 规范值（越高越自信）；seq_recovery 仅针对设计残基；"
-                "温度越高多样性越大。序列已按 score 降序。",
+        "note": "overall_confidence=模型对整条序列的平均置信度（越高越好）；"
+                "seq_recovery=与原生序列在可设计位置的同一性；温度越高多样性越大。"
+                "designs 已按 overall_confidence 降序；backbones/ 下为对应设计骨架 PDB。",
     }

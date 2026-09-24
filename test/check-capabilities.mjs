@@ -62,7 +62,7 @@ for (const t of TOOLS_MANIFEST) {
   assert.ok(NET.has(t.network), `${t.name}: network 非法值 ${t.network}`)
   assert.ok(MUT.has(t.mutability), `${t.name}: mutability 非法值 ${t.mutability}`)
   assert.ok(STATUS.has(t.status), `${t.name}: status 非法值 ${t.status}`)
-  assert.ok(t.capability.startsWith('gem.'), `${t.name}: capability 应以 gem. 前缀（${t.capability}）`)
+  assert.ok(t.capability.startsWith('galatea.'), `${t.name}: capability 应以 galatea. 前缀（${t.capability}）`)
 }
 
 console.log(`✓ capabilities manifest 与 ${registered.length} 个注册工具一致（含元数据枚举校验）`)
