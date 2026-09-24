@@ -15,6 +15,33 @@ import sys
 import traceback
 
 
+def _available_ram_gib():
+    """可用物理内存（GiB）。Windows 走 GlobalMemoryStatusEx；失败返回 None。"""
+    try:
+        import ctypes
+
+        class MEMORYSTATUSEX(ctypes.Structure):
+            _fields_ = [
+                ("dwLength", ctypes.c_ulong),
+                ("dwMemoryLoad", ctypes.c_ulong),
+                ("ullTotalPhys", ctypes.c_ulonglong),
+                ("ullAvailPhys", ctypes.c_ulonglong),
+                ("ullTotalPageFile", ctypes.c_ulonglong),
+                ("ullAvailPageFile", ctypes.c_ulonglong),
+                ("ullTotalVirtual", ctypes.c_ulonglong),
+                ("ullAvailVirtual", ctypes.c_ulonglong),
+                ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+            ]
+
+        st = MEMORYSTATUSEX()
+        st.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
+        if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(st)):
+            return st.ullAvailPhys / (1024 ** 3)
+    except Exception:
+        pass
+    return None
+
+
 def main():
     input_path, out_dir = sys.argv[1], sys.argv[2]
     with open(input_path, "r", encoding="utf-8") as fh:
@@ -33,6 +60,22 @@ def main():
         device = device_pref
         if device == "cuda" and not torch.cuda.is_available():
             raise RuntimeError("device=cuda 但 torch.cuda.is_available() 为 False")
+
+    # 内存预检：ESMFold bf16 加载约需 6.6 GiB 连续可用内存；不足时明确报错，
+    # 避免 Windows 内存压力下的系统级崩溃（access violation，无 traceback 不可诊断）。
+    avail = _available_ram_gib()
+    # 阈值依据实测：6.06 GiB 可用时 bf16 加载 + 推理可成功（low_cpu_mem_usage + 分页）；
+    # 低于 ~2 GiB 时曾在加载阶段出现系统级 access violation（不可诊断崩溃）。
+    # 环境变量 GALATEA_FOLD_MIN_RAM_GIB 可覆盖阈值（显式承担崩溃风险时使用）。
+    try:
+        min_ram = float(os.environ.get("GALATEA_FOLD_MIN_RAM_GIB", "6.0"))
+    except ValueError:
+        min_ram = 6.0
+    if avail is not None and avail < min_ram:
+        raise RuntimeError(
+            f"可用物理内存不足（{avail:.1f} GiB < {min_ram:g} GiB 阈值）：ESMFold（bf16）加载约需 6.6 GiB，"
+            "低内存下会触发系统级崩溃而无法诊断。请关闭其他大内存程序后重试。"
+        )
 
     tokenizer = AutoTokenizer.from_pretrained(model_ref)
     # 内存纪律：esmfold_v1 检查点内 ESM-2 主干为 fp16、folding trunk 为 fp32；
@@ -64,21 +107,18 @@ def main():
     for idx, seq in enumerate(sequences):
         try:
             with torch.no_grad():
-                out = model.infer_pdb(seq) if hasattr(model, "infer_pdb") else None
+                # 高层 API：内部完成 tokenization 与 dtype 处理（transformers ≥5 推荐路径）。
+                # 手动 tokenizer+forward 在 5.x 下有 one_hot dtype 兼容问题（RuntimeError），弃用。
+                out = model.infer(seq)
             if out is None:
-                # transformers 路径：tokenizer + model(**inputs) 再 output_to_pdb
-                inputs = tokenizer([seq], return_tensors="pt", add_special_tokens=False)
-                inputs = {k: v.to(device) for k, v in inputs.items()}
-                with torch.no_grad():
-                    output = model(**inputs)
-                pdb_str = model.output_to_pdb(output)[0]
-                plddt = output["plddt"]
-                ptm = float(output["ptm"].mean().item()) if "ptm" in output else None
-                mean_plddt = float(plddt.mean().item())
-            else:
-                pdb_str = out
-                mean_plddt = None
-                ptm = None
+                raise RuntimeError("模型缺少 infer() 接口，无法推理")
+            plddt = out["plddt"]
+            mean_plddt = float(plddt[0, : len(seq)].float().mean().item()) if "plddt" in out else None
+            ptm = float(out["ptm"].mean().item()) if "ptm" in out else None
+            # numpy 不支持 bfloat16 → 导出 PDB 前把 bf16 张量转回 fp32（仅导出用途）
+            out_for_pdb = {k: (v.float() if torch.is_tensor(v) and v.dtype == torch.bfloat16 else v)
+                           for k, v in out.items()}
+            pdb_str = model.output_to_pdb(out_for_pdb)[0]
             name = f"{idx:02d}_{len(seq)}aa"
             pdb_path = os.path.join(out_dir, name + ".pdb")
             with open(pdb_path, "w", encoding="utf-8") as fh:
