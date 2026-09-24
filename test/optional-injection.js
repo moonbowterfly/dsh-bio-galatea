@@ -35,7 +35,7 @@ globalThis.clearTimeout = (timer) => { cleared.push(timer) }
 
 try {
   plugin.apply(ctx)
-  assert.equal(toolRegistrations, 23)
+  assert.equal(toolRegistrations, 8)
   assert.equal(skillRegistrations, 1)
   assert.equal(routes.length, 0)
   assert.deepEqual(dynamicInjection?.deps, ['webServer'])
@@ -56,9 +56,9 @@ try {
   }
   dynamicInjection.callback(webCtx)
   assert.deepEqual(routes.map((route) => route.path), [
-    '/api/dsh-bio-gem/integration/health',
-    '/api/dsh-bio-gem/integration/v1/status',
-    '/api/dsh-bio-gem/integration/v1/capabilities',
+    '/api/dsh-bio-galatea/integration/health',
+    '/api/dsh-bio-galatea/integration/v1/status',
+    '/api/dsh-bio-galatea/integration/v1/capabilities',
   ])
   assert.deepEqual(scheduled.map((timer) => timer.delay), [8_000])
 
@@ -69,4 +69,4 @@ try {
   globalThis.clearTimeout = originalClearTimeout
 }
 
-console.log('✓ dynamic webServer injection leaves all 23 gem tools active')
+console.log('✓ dynamic webServer injection leaves all 8 galatea tools active')

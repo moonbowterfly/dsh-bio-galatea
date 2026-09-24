@@ -38,21 +38,21 @@ export const TOOLS_MANIFEST = [
   // ---- screening（筛选） ----
   { name: 'galatea_interface', capability: 'galatea.screen.interface', category: 'screening',
     cost_class: 'light', network: 'none', mutability: 'read_only', status: 'ready',
-    requires: ['python.analysis'],
+    requires: ['runtime.analysis'],
     summary: '复合物界面分析：链间接触/氢键/盐桥/SASA/界面残基 + pLDDT 分带统计（复合物结构 → 筛选指标）' },
   { name: 'galatea_score', capability: 'galatea.screen.sequence-scoring', category: 'screening',
     cost_class: 'light', network: 'none', mutability: 'read_only', status: 'ready',
-    requires: ['python.analysis'],
+    requires: ['runtime.analysis'],
     summary: '序列理化打分（批量）：pI / 净电荷 / GRAVY / 疏水矩 / 聚集倾向 / 半胱氨酸计数' },
 
   // ---- analysis（分析） ----
   { name: 'galatea_inspect', capability: 'galatea.analyze.structure-qc', category: 'analysis',
     cost_class: 'light', network: 'none', mutability: 'read_only', status: 'ready',
-    requires: ['python.analysis'],
+    requires: ['runtime.analysis'],
     summary: '结构检查（QC）：链/长度/几何异常（原子 clash）/pLDDT 分布，输出可读结论' },
   { name: 'galatea_cluster', capability: 'galatea.analyze.cluster', category: 'analysis',
     cost_class: 'medium', network: 'none', mutability: 'read_only', status: 'ready',
-    requires: ['python.analysis'],
+    requires: ['runtime.analysis'],
     summary: '候选聚类（序列同一性矩阵 + 贪心代表集）：设计多样性选择，输出代表序列' },
 ]
 

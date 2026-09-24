@@ -1,5 +1,5 @@
 /**
- * Integration protocol unit tests.
+ * Integration protocol unit tests (dsh-bio-galatea).
  *
  * Run: node test/integration.js
  */
@@ -26,16 +26,6 @@ async function test(name, fn) {
     console.error(`✗ ${name}`)
     console.error(error.stack || error.message)
   }
-}
-
-function deferred() {
-  let resolve
-  let reject
-  const promise = new Promise((nextResolve, nextReject) => {
-    resolve = nextResolve
-    reject = nextReject
-  })
-  return { promise, resolve, reject }
 }
 
 function nextTurn() {
@@ -65,106 +55,105 @@ async function invokeRoute(handler, options = {}) {
   return { status, headers, body: JSON.parse(payload) }
 }
 
+/** 全就绪 fixture：MPNN 代码 + 权重、ESMFold 权重、输出目录。 */
+function makeDataRoot() {
+  const dataRoot = mkdtempSync(join(tmpdir(), 'galatea-integration-'))
+  mkdirSync(join(dataRoot, 'vendor', 'LigandMPNN'), { recursive: true })
+  writeFileSync(join(dataRoot, 'vendor', 'LigandMPNN', 'run.py'), '# stub')
+  mkdirSync(join(dataRoot, 'models', 'mpnn'), { recursive: true })
+  writeFileSync(join(dataRoot, 'models', 'mpnn', 'proteinmpnn_v_48_020.pt'), 'x'.repeat(1024))
+  writeFileSync(join(dataRoot, 'models', 'mpnn', 'solublempnn_v_48_020.pt'), 'y'.repeat(2048))
+  mkdirSync(join(dataRoot, 'models', 'esmfold'), { recursive: true })
+  writeFileSync(join(dataRoot, 'models', 'esmfold', 'model.safetensors'), 'z'.repeat(4096))
+  mkdirSync(join(dataRoot, 'out'), { recursive: true })
+  writeFileSync(join(dataRoot, 'out', 'run-1.json'), '{}')
+  writeFileSync(join(dataRoot, 'out', 'run-2.json'), '{}')
+  return dataRoot
+}
+
 await test('health exposes the frozen protocol identity without a runtime probe', async () => {
   assert.equal(typeof integration?.createIntegrationService, 'function')
   let runtimeProbes = 0
   const service = integration.createIntegrationService({
     probePython: async () => { runtimeProbes += 1; return { selected: null, candidates: [] } },
-    probeGapseq: async () => { runtimeProbes += 1; return { available: false } },
+    probeAnalysis: async () => { runtimeProbes += 1; return null },
   })
   const response = await service.health()
 
   assert.deepEqual(response, {
     ok: true,
     value: {
-      pluginId: 'dsh-bio-gem',
-      pluginVersion: '0.1.12',
+      pluginId: 'dsh-bio-galatea',
+      pluginVersion: '0.1.0',
       protocolMajor: 1,
       protocolMinors: [0],
       features: [
         'status',
-        'model-store',
-        'ledger',
-        'exports',
-        'carveme-runtime',
-        'gapseq-probe',
+        'capabilities',
+        'weight-store',
+        'outputs',
+        'device-probe',
+        'runtime-mpnn',
+        'runtime-esmfold',
       ],
     },
   })
   assert.equal(runtimeProbes, 0)
 })
 
-await test('status reports the three required checks and bounded asset summaries', async () => {
+await test('status reports the four required checks and bounded asset summaries', async () => {
   assert.equal(typeof integration?.createIntegrationService, 'function')
-  const dataRoot = mkdtempSync(join(tmpdir(), 'gem-integration-'))
+  const dataRoot = makeDataRoot()
   try {
-    mkdirSync(join(dataRoot, 'models'))
-    mkdirSync(join(dataRoot, 'ledger'))
-    mkdirSync(join(dataRoot, 'exports'))
-    mkdirSync(join(dataRoot, 'venv-carveme', 'Scripts'), { recursive: true })
-    writeFileSync(join(dataRoot, 'models', 'C58.xml'), '<sbml />')
-    for (let index = 0; index < 50; index += 1) {
-      writeFileSync(join(dataRoot, 'models', `extra-${index}.xml`), '<sbml />')
-    }
-    writeFileSync(join(dataRoot, 'ledger', 'C58.jsonl'), '{"prediction_id":"P0001"}\n')
-    writeFileSync(join(dataRoot, 'exports', 'targets.json'), '[]')
-    writeFileSync(join(dataRoot, 'venv-carveme', 'Scripts', 'carve.exe'), '')
-    writeFileSync(join(dataRoot, 'venv-carveme', 'Scripts', 'diamond.exe'), '')
-
     const service = integration.createIntegrationService({
       dataRoot,
       now: () => 1_700_000_000_000,
       probePython: async () => ({
-        selected: { path: 'python', source: 'PATH', cobraVersion: '0.32.1' },
+        selected: { path: 'python', source: 'PATH', torchVersion: '2.14.0' },
         candidates: [{ path: 'python', source: 'PATH', exists: true }],
       }),
-      probeGapseq: async () => ({ available: true, detail: 'gapseq 2.1.0' }),
+      probeAnalysis: async () => 'ok',
+      probeDeviceFn: async () => ({ mode: 'cpu' }),
     })
-    const first = await service.status()
-    const firstGapseq = first.value.checks.find((check) => check.id === 'runtime.gapseq')
-    assert.equal(first.value.env.engines.gapseq.available, null)
-    assert.equal(firstGapseq.status, 'warn')
-
+    await service.status()
     await nextTurn()
     const response = await service.status()
 
     assert.equal(response.ok, true)
     assert.equal(response.value.state, 'ready')
     assert.deepEqual(response.value.checks.map((check) => [check.id, check.status]), [
-      ['python.cobra', 'ok'],
-      ['runtime.carveme', 'ok'],
-      ['runtime.gapseq', 'ok'],
+      ['python.torch', 'ok'],
+      ['runtime.analysis', 'ok'],
+      ['runtime.mpnn', 'ok'],
+      ['runtime.esmfold', 'ok'],
     ])
-    assert.equal(response.value.data.models.count, 51)
-    assert.equal(response.value.data.models.items.length, 50)
-    assert.equal(response.value.data.ledger.count, 1)
-    assert.equal(response.value.data.ledger.totalEntries, 1)
-    assert.equal(response.value.data.exports.count, 1)
-    assert.deepEqual(response.value.env.python.selected, {
-      path: 'python', source: 'PATH', cobraVersion: '0.32.1',
-    })
-    assert.equal(response.value.env.engines.carveme.available, true)
-    assert.equal(response.value.env.engines.gapseq.available, true)
+    assert.equal(response.value.data.weights.fileCount, 3)
+    const mpnnComponent = response.value.data.weights.components
+      .find((component) => component.component === 'mpnn')
+    assert.equal(mpnnComponent.fileCount, 2)
+    assert.equal(response.value.data.outputs.count, 2)
     assert.deepEqual(response.value.remediations, [])
+    assert.ok(response.value.env.device)
   } finally {
     rmSync(dataRoot, { recursive: true, force: true })
   }
 })
 
-await test('status keeps Python cached for sixty seconds and successful gapseq cached longer', async () => {
+await test('status caches Python and analysis probes for sixty seconds', async () => {
   assert.equal(typeof integration?.createIntegrationService, 'function')
   let clock = 1_700_000_000_000
   let pythonProbes = 0
-  let gapseqProbes = 0
+  let analysisProbes = 0
   const service = integration.createIntegrationService({
     now: () => clock,
     probePython: async () => {
       pythonProbes += 1
-      return { selected: null, candidates: [] }
+      // selected 非空 → readAnalysis 才会真正调用 probeAnalysis（无解释器时短路是设计行为）
+      return { selected: { path: 'python', source: 'PATH', torchVersion: '2.14.0' }, candidates: [] }
     },
-    probeGapseq: async () => {
-      gapseqProbes += 1
-      return { available: true, detail: 'available' }
+    probeAnalysis: async () => {
+      analysisProbes += 1
+      return 'ok'
     },
   })
 
@@ -172,150 +161,84 @@ await test('status keeps Python cached for sixty seconds and successful gapseq c
   await nextTurn()
   await service.status()
   assert.equal(pythonProbes, 1)
-  assert.equal(gapseqProbes, 1)
+  assert.equal(analysisProbes, 1)
 
   clock += 60_001
   await service.status()
   assert.equal(pythonProbes, 2)
-  assert.equal(gapseqProbes, 1)
+  assert.equal(analysisProbes, 2)
 })
 
-await test('degraded checks expose only controlled remediation codes and owners', async () => {
+await test('degraded checks expose controlled remediation codes and a degraded state', async () => {
   assert.equal(typeof integration?.createIntegrationService, 'function')
-  const dataRoot = mkdtempSync(join(tmpdir(), 'gem-integration-remediation-'))
+  const dataRoot = mkdtempSync(join(tmpdir(), 'galatea-integration-empty-'))
+  const prevHF = process.env.HF_HOME
+  process.env.HF_HOME = join(dataRoot, 'no-hf')
   try {
     const service = integration.createIntegrationService({
       dataRoot,
       probePython: async () => ({ selected: null, candidates: [] }),
-      probeGapseq: async () => ({ available: false, detail: 'not configured' }),
+      probeAnalysis: async () => null,
     })
+    await service.status()
+    await nextTurn()
     const response = await service.status()
+
     assert.equal(response.value.state, 'degraded')
-    assert.deepEqual(response.value.remediations.map(({ code, owner }) => ({ code, owner })), [
-      { code: 'genie.bootstrap-python', owner: 'genie' },
-      { code: 'gem.install-carveme-runtime', owner: 'gem' },
-      { code: 'genie.install-wsl-gapseq', owner: 'genie' },
+    assert.deepEqual(response.value.checks.map((check) => [check.id, check.status]), [
+      ['python.torch', 'missing'],
+      ['runtime.analysis', 'missing'],
+      ['runtime.mpnn', 'missing'],
+      ['runtime.esmfold', 'missing'],
     ])
+    const codes = response.value.remediations.map((remediation) => remediation.code)
+    assert.ok(codes.includes('galatea.setup-env'))
+    assert.ok(codes.includes('galatea.setup-mpnn'))
+    assert.ok(codes.includes('galatea.setup-esmfold'))
+    assert.ok(response.value.remediations.every((remediation) => remediation.owner === 'galatea'))
   } finally {
+    if (prevHF === undefined) delete process.env.HF_HOME
+    else process.env.HF_HOME = prevHF
     rmSync(dataRoot, { recursive: true, force: true })
   }
 })
 
-await test('status uses the ordered gem Python candidates to expose cobra availability', async () => {
+await test('capabilities exposes the eight-tool manifest with dependency marking', async () => {
   assert.equal(typeof integration?.createIntegrationService, 'function')
-  const cobraCalls = []
-  const service = integration.createIntegrationService({
-    pythonCandidates: () => [
-      { path: 'missing-python', source: 'GEM_PYTHON' },
-      { path: 'usable-python', source: 'genie-hosted' },
-    ],
-    fileExists: (path) => path === 'usable-python',
-    probeCobra: async (path) => {
-      cobraCalls.push(path)
-      return '0.32.1'
-    },
-    probeGapseq: async () => ({ available: true, detail: 'available' }),
-  })
+  const dataRoot = mkdtempSync(join(tmpdir(), 'galatea-integration-caps-'))
+  const prevHF = process.env.HF_HOME
+  process.env.HF_HOME = join(dataRoot, 'no-hf')
+  try {
+    const service = integration.createIntegrationService({
+      dataRoot,
+      probePython: async () => ({ selected: null, candidates: [] }),
+      probeAnalysis: async () => null,
+    })
+    await service.status()
+    await nextTurn()
+    const response = await service.capabilities()
 
-  const response = await service.status()
-  assert.deepEqual(response.value.env.python.candidates, [
-    { path: 'missing-python', source: 'GEM_PYTHON', exists: false },
-    { path: 'usable-python', source: 'genie-hosted', exists: true },
-  ])
-  assert.deepEqual(response.value.env.python.selected, {
-    path: 'usable-python', source: 'genie-hosted', cobraVersion: '0.32.1',
-  })
-  assert.deepEqual(cobraCalls, ['usable-python'])
+    assert.equal(response.ok, true)
+    assert.equal(response.value.plugin_id, 'dsh-bio-galatea')
+    assert.equal(response.value.plugin_version, '0.1.0')
+    assert.equal(response.value.tool_count, 8)
+    assert.equal(response.value.tools.length, 8)
+    const names = response.value.tools.map((tool) => tool.name)
+    for (const expected of ['galatea_status', 'galatea_setup', 'galatea_mpnn', 'galatea_fold', 'galatea_interface', 'galatea_score', 'galatea_inspect', 'galatea_cluster']) {
+      assert.ok(names.includes(expected), `missing tool ${expected}`)
+    }
+    // 缺依赖工具被标为 unavailable 并列出缺失项（python.torch 缺失 → mpnn/fold 不可用）
+    const mpnn = response.value.tools.find((tool) => tool.name === 'galatea_mpnn')
+    assert.equal(mpnn.status, 'unavailable')
+    assert.ok(mpnn.missing_dependencies.includes('python.torch'))
+  } finally {
+    if (prevHF === undefined) delete process.env.HF_HOME
+    else process.env.HF_HOME = prevHF
+    rmSync(dataRoot, { recursive: true, force: true })
+  }
 })
 
-await test('gapseq first status is probing and the fixed read-only command later parses its version', async () => {
-  assert.equal(typeof integration?.createIntegrationService, 'function')
-  const calls = []
-  const longProbe = deferred()
-  const service = integration.createIntegrationService({
-    probePython: async () => ({ selected: null, candidates: [] }),
-    isWindows: true,
-    runGapseqProbe: (command, args) => {
-      calls.push({ command, args })
-      if (args[0] === '-l') return Promise.resolve({ ok: true, stdout: 'Ubuntu-22.04\n' })
-      return longProbe.promise
-    },
-  })
-
-  const first = await service.status()
-  const firstCheck = first.value.checks.find((check) => check.id === 'runtime.gapseq')
-  assert.equal(first.value.env.engines.gapseq.available, null)
-  assert.equal(first.value.env.engines.gapseq.probing, true)
-  assert.equal(firstCheck.status, 'warn')
-
-  await nextTurn()
-  assert.deepEqual(calls[0], { command: 'wsl.exe', args: ['-l', '-q'] })
-  assert.equal(calls[1].command, 'wsl.exe')
-  assert.deepEqual(calls[1].args.slice(0, 7), ['-d', 'Ubuntu-22.04', '-u', 'root', '--', 'bash', '-lc'])
-  assert.match(calls[1].args[7], /gapseq -v/)
-  assert.doesNotMatch(calls[1].args[7], /install|update|download/i)
-
-  longProbe.resolve({ ok: true, stdout: 'gapseq version: 2.1.0' })
-  await nextTurn()
-  const settled = await service.status()
-  const settledCheck = settled.value.checks.find((check) => check.id === 'runtime.gapseq')
-  assert.equal(settled.value.env.engines.gapseq.available, true)
-  assert.equal(settledCheck.status, 'ok')
-  assert.match(settledCheck.detail, /2\.1\.0/)
-})
-
-await test('gapseq distro preflight does not start a long probe when no target distro exists', async () => {
-  assert.equal(typeof integration?.createIntegrationService, 'function')
-  const calls = []
-  const service = integration.createIntegrationService({
-    probePython: async () => ({ selected: null, candidates: [] }),
-    isWindows: true,
-    runGapseqProbe: async (command, args) => {
-      calls.push({ command, args })
-      return { ok: true, stdout: '' }
-    },
-  })
-
-  await service.status()
-  await nextTurn()
-  assert.deepEqual(calls, [{ command: 'wsl.exe', args: ['-l', '-q'] }])
-})
-
-await test('failed gapseq probes use a sixty-second cooldown before an automatic retry', async () => {
-  assert.equal(typeof integration?.createIntegrationService, 'function')
-  let clock = 1_700_000_000_000
-  let longProbeCalls = 0
-  const service = integration.createIntegrationService({
-    now: () => clock,
-    probePython: async () => ({ selected: null, candidates: [] }),
-    isWindows: true,
-    runGapseqProbe: async (_command, args) => {
-      if (args[0] === '-l') return { ok: true, stdout: 'Ubuntu-22.04\n' }
-      longProbeCalls += 1
-      return { ok: false, timeout: true, stdout: '' }
-    },
-  })
-
-  const first = await service.status()
-  assert.equal(first.value.env.engines.gapseq.available, null)
-  await nextTurn()
-  const failed = await service.status()
-  assert.equal(failed.value.env.engines.gapseq.available, false)
-  assert.equal(longProbeCalls, 1)
-
-  clock += 59_999
-  await service.status()
-  await nextTurn()
-  assert.equal(longProbeCalls, 1)
-
-  clock += 2
-  const stale = await service.status()
-  assert.equal(stale.value.env.engines.gapseq.available, false)
-  await nextTurn()
-  assert.equal(longProbeCalls, 2)
-})
-
-await test('integration routes allow loopback health and reject non-loopback callers', async () => {
+await test('integration routes register three endpoints and reject non-loopback callers', async () => {
   assert.equal(typeof integration?.registerIntegrationRoutes, 'function')
   const routes = []
   const ctx = {
@@ -327,9 +250,17 @@ await test('integration routes allow loopback health and reject non-loopback cal
     },
   }
   const dispose = integration.registerIntegrationRoutes(ctx, {
-    service: integration.createIntegrationService(),
+    service: integration.createIntegrationService({
+      probePython: async () => ({ selected: null, candidates: [] }),
+      probeAnalysis: async () => null,
+    }),
   })
   try {
+    assert.deepEqual(routes.map((route) => route.path), [
+      '/api/dsh-bio-galatea/integration/health',
+      '/api/dsh-bio-galatea/integration/v1/status',
+      '/api/dsh-bio-galatea/integration/v1/capabilities',
+    ])
     const health = routes.find((route) => route.path.endsWith('/health'))
     assert.ok(health)
     const allowed = await invokeRoute(health.handler)
@@ -355,7 +286,7 @@ await test('status route returns a safe failure envelope when a probe fails', as
   const dispose = integration.registerIntegrationRoutes(ctx, {
     service: {
       health: async () => ({ ok: true, value: {} }),
-      status: async () => { throw new Error('GEM_API_TOKEN=should-not-leak') },
+      status: async () => { throw new Error('GALATEA_API_TOKEN=should-not-leak') },
     },
   })
   try {
