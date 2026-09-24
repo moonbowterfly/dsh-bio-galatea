@@ -1,0 +1,51 @@
+{
+  "name": "@dsh-bio/dsh-bio-galatea",
+  "version": "0.1.0",
+  "description": "蛋白质结构预测与设计插件：序列设计（ProteinMPNN/SolubleMPNN/LigandMPNN）、结构预测（ESMFold）、复合物界面筛选、序列理化打分与多样性聚类——零手动自举（本地 CPU/GPU 自适应），供 dsh-bio-genie 消费 | Protein structure prediction & design toolkit for dsh (sequence design, folding, interface screening)",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/moonbowterfly/dsh-bio-galatea.git"
+  },
+  "homepage": "https://github.com/moonbowterfly/dsh-bio-galatea",
+  "bugs": {
+    "url": "https://github.com/moonbowterfly/dsh-bio-galatea/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "cordis.patch.yml",
+    "src/**/*.js",
+    "python/**/*.py",
+    "skills/**/*.md",
+    "docs/**/*.md",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": ["dsh", "deepseek-harness", "dsh-plugin", "protein-design", "proteinmpnn", "ligandmpnn", "esmfold", "structure-prediction", "inverse-folding", "bioinformatics"],
+  "license": "MIT",
+  "engines": { "node": "^22.19 || >=24" },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "scripts": {
+    "smoke": "node test/smoke.js",
+    "test": "node test/smoke.js && node test/integration.js && node --import ./test/register-dsh-tools.mjs test/optional-injection.js && node --import ./test/register-dsh-tools.mjs test/check-capabilities.mjs && node test/check-counts.mjs"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-tools": "*"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh-tools": { "optional": true }
+  }
+}

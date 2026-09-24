@@ -1,0 +1,7 @@
+# dsh-bio-galatea bundle patch: inserts the plugin row over whatever profile it
+# is stacked on. Applied AFTER @deepseek-ai/dsh-base (which supplies the
+# `tools` service this plugin injects).
+
+- insert:
+    - id: dsh-bio-galatea
+      name: '@dsh-bio/dsh-bio-galatea'
