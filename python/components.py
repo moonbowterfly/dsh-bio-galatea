@@ -115,25 +115,69 @@ def probe_status(data_root):
         "ready": mpnn_code and len(weights) > 0,
     }
 
-    # ESMFold 权重（私有目录优先，HF 缓存兜底）
+    # ESMFold 权重（私有目录优先，HF 缓存兜底；须为真实大文件，防"空壳目录"误报）
+    def _has_big_weight(base):
+        if not os.path.isdir(base):
+            return False
+        for f in os.listdir(base):
+            if f.endswith((".bin", ".safetensors", ".pt")) and not f.endswith(".incomplete"):
+                try:
+                    if os.path.getsize(os.path.join(base, f)) > 100 * 1024 * 1024:
+                        return True
+                except OSError:
+                    pass
+        return False
+
     esm_dir = os.path.join(data_root, "models", "esmfold")
     esm_files = []
     if os.path.isdir(esm_dir):
         esm_files = sorted(f for f in os.listdir(esm_dir) if f.endswith((".bin", ".safetensors", ".pt")))
-    esm_source = "galatea-private" if esm_files else None
-    if not esm_files:
+    esm_ready = _has_big_weight(esm_dir)
+    esm_source = "galatea-private" if esm_ready else None
+    esm_downloading = None
+    dl_dir = os.path.join(esm_dir, ".cache", "huggingface", "download")
+    if not esm_ready and os.path.isdir(dl_dir):
+        got = 0
+        for f in os.listdir(dl_dir):
+            if f.endswith(".incomplete"):
+                try:
+                    got += os.path.getsize(os.path.join(dl_dir, f))
+                except OSError:
+                    pass
+        if got:
+            esm_downloading = {"bytes_downloaded": got}
+    if not esm_ready:
         hf_home = os.environ.get("HF_HOME") or os.path.join(os.path.expanduser("~"), ".cache", "huggingface")
         hub = os.path.join(hf_home, "hub")
         if os.path.isdir(hub):
-            hits = [d for d in os.listdir(hub) if "esmfold" in d.lower()]
-            if hits:
-                esm_source = "hf-cache"
+            for d in os.listdir(hub):
+                if "esmfold" not in d.lower():
+                    continue
+                snap_root = os.path.join(hub, d)
+                big = False
+                for walk_root, _dirs, fnames in os.walk(snap_root):
+                    for fn in fnames:
+                        if fn.endswith((".bin", ".safetensors")):
+                            try:
+                                if os.path.getsize(os.path.join(walk_root, fn)) > 100 * 1024 * 1024:
+                                    big = True
+                                    break
+                            except OSError:
+                                pass
+                    if big:
+                        break
+                if big:
+                    esm_source = "hf-cache"
+                    esm_ready = True
+                    break
     info["components"]["esmfold"] = {
         "weights_dir": esm_dir,
         "weights": esm_files,
         "source": esm_source,
-        "ready": bool(esm_files) or esm_source == "hf-cache",
+        "ready": esm_ready,
     }
+    if esm_downloading:
+        info["components"]["esmfold"]["downloading"] = esm_downloading
     return info
 
 

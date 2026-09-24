@@ -35,7 +35,16 @@ def main():
             raise RuntimeError("device=cuda 但 torch.cuda.is_available() 为 False")
 
     tokenizer = AutoTokenizer.from_pretrained(model_ref)
-    model = EsmForProteinFolding.from_pretrained(model_ref, low_cpu_mem_usage=True)
+    # 内存纪律：esmfold_v1 检查点内 ESM-2 主干为 fp16、folding trunk 为 fp32；
+    # 全 fp32 加载 ≈13.1 GiB（14-16GB 内存笔记本会 OOM），bf16/fp16 ≈6.6 GiB。
+    # CPU 用 bfloat16（原生支持、动态范围与 fp32 同级）；GPU 按 bf16 支持选择。
+    if device == "cuda":
+        torch_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+    else:
+        torch_dtype = torch.bfloat16
+    model = EsmForProteinFolding.from_pretrained(
+        model_ref, low_cpu_mem_usage=True, torch_dtype=torch_dtype
+    )
     model = model.eval()
     if device == "cuda":
         model = model.cuda()

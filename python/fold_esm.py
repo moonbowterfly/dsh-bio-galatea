@@ -24,7 +24,21 @@ def fold_sequences(sequences, out_dir, device="auto", data_root=None, chunk_size
     venv_py = _venv_python(data_root)
     runner = venv_py if os.path.exists(venv_py) else sys.executable
     model_dir = os.path.join(data_root, "models", "esmfold")
-    model_ref = model_dir if os.path.exists(os.path.join(model_dir, "config.json")) else "facebook/esmfold_v1"
+
+    def _dir_has_weights(base):
+        # 仅在"权重真实落位"（大文件存在）时使用私有目录；仅 config、或下载中（.cache）不算
+        if not os.path.isdir(base):
+            return False
+        for f in os.listdir(base):
+            if f.endswith((".bin", ".safetensors")) and not f.endswith(".incomplete"):
+                try:
+                    if os.path.getsize(os.path.join(base, f)) > 100 * 1024 * 1024:
+                        return True
+                except OSError:
+                    pass
+        return False
+
+    model_ref = model_dir if _dir_has_weights(model_dir) else "facebook/esmfold_v1"
 
     # 输入文件（避免超长命令行）
     input_path = os.path.join(out_dir, "_fold_input.json")
