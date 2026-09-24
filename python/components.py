@@ -366,6 +366,36 @@ def setup_mpnn(data_root, force=False):
     }
 
 
+def _patch_transformers_esmfold_dtype(data_root):
+    """修 transformers 5.x ESMFold 在 bf16 推理时 one_hot 的 dtype 崩溃（幂等）。
+
+    问题（2026-09-24 实测，transformers 5.17.0 + bf16 加载）：
+    openfold_utils/feats.py 的 frames_and_literature_positions_to_atom14_pos 中
+        group_mask = group_idx[aatype, ...]   # bf16 模型下 group_idx 已被 .to(dtype) 转成 bf16
+        nn.functional.one_hot(group_mask)     # RuntimeError: one_hot is only applicable to LongTensor
+    修复：索引结果显式 .to(torch.long)（语义无损：分组号本为小整数常量）。
+    影响范围：任何 bf16/fp16 dtype 加载的 ESMFold 推理（CPU bf16 是低显存机型的唯一可行路线）。
+    """
+    from pathlib import Path
+
+    py = _venv_python(data_root)
+    sp = Path(py).parent.parent / "Lib" / "site-packages"
+    f = sp / "transformers" / "models" / "esm" / "openfold_utils" / "feats.py"
+    if not f.exists():
+        return None  # transformers 未装（env 未跑）——跳过
+    s = f.read_text(encoding="utf-8")
+    if "[galatea patch" in s:
+        return "already"
+    old = "    group_mask = group_idx[aatype, ...]\n\n    # [*, N, 14, 8]"
+    new = ("    group_mask = group_idx[aatype, ...]\n"
+           "    # [galatea patch] bf16 下索引结果失去 Long → one_hot 报错；显式 cast。\n"
+           "    group_mask = group_mask.to(torch.long)\n\n    # [*, N, 14, 8]")
+    if old not in s:
+        return "anchor-missing"
+    f.write_text(s.replace(old, new, 1), encoding="utf-8")
+    return "patched"
+
+
 def setup_esmfold(data_root, force=False):
     """下载 ESMFold 权重（facebook/esmfold_v1）到私有目录。
 
@@ -377,10 +407,14 @@ def setup_esmfold(data_root, force=False):
     if not os.path.exists(py):
         return {"status": "failed", "note": "私有 venv 不存在——请先运行 galatea_setup(action=\"env\")。",
                 "target": target}
+    # transformers ESMFold bf16 兼容补丁（幂等；每次 setup 都检查）
+    dtype_patch = _patch_transformers_esmfold_dtype(data_root)
+
     if not force and os.path.isdir(target):
         files = [f for f in os.listdir(target) if f.endswith((".bin", ".safetensors"))]
         if files:
-            return {"status": "already", "target": target, "files": files[:10]}
+            return {"status": "already", "target": target, "files": files[:10],
+                    "dtype_patch": dtype_patch}
 
     env = _mirror_env()
     os.makedirs(target, exist_ok=True)
@@ -391,7 +425,7 @@ def setup_esmfold(data_root, force=False):
     )
     ok, out, err, _rc = _run([py, "-c", code], timeout=3000, env=env)
     if ok and "DOWNLOAD_OK" in (out or ""):
-        return {"status": "installed", "target": target}
+        return {"status": "installed", "target": target, "dtype_patch": dtype_patch}
     hint = err[-500:] if err else out[-300:]
     mirror_hint = "（如网络不通，可设置环境变量 HF_ENDPOINT=https://hf-mirror.com 后重试）"
     return {"status": "failed", "target": target, "detail": hint + mirror_hint}
