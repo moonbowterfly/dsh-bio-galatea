@@ -1,6 +1,6 @@
-// dsh-bio-galatea — 工具层（defineTool 注册，8 语义化工具，v0.1）
+// dsh-bio-galatea — 工具层（defineTool 注册，10 语义化工具，v0.1）
 // 全部执行走 python/galatea_ops.py（JSON stdin 协议）。
-// op 与工具对照：status/setup/mpnn/fold/interface/score/inspect/cluster（1:1）。
+// op 与工具对照（1:1）：status/setup/mpnn/fold/interface/score/inspect/cluster（同名）；rank.consensus→galatea_rank；rank.aggregate→galatea_rank_aggregate。
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { isAbsolute } from 'node:path'
 import { callGalatea } from './python.js'
@@ -198,6 +198,43 @@ export function registerTools(ctx) {
       threshold: { type: 'number', description: '同一性阈值（缺省 0.8）' },
     },
     op: 'cluster',
+    timeoutMs: 300_000,
+  })))
+
+  // ---------------------------------------------------------------------
+  // galatea_rank — 候选共识排序（多预测器等权共识；确定性，无学习融合）
+  // ---------------------------------------------------------------------
+  disposers.push(ctx.tools.register(galateaTool({
+    name: 'galatea_rank',
+    description:
+      '候选共识排序（确定性等权共识，无学习融合）：输入候选表（结构化 JSON 或 CSV 文件），每个候选带一组预测器分数（列名如 ipsae_min_* 或 {predictor: score} 字典），' +
+      '输出共识均值（即各分数算术平均）+ 分档（strong≥0.73 / medium≥0.65 / weak≥0.2 / reject<0.2）+ 全局排名 + 覆盖率统计。' +
+      '实测口径（1,440 条真实湿实验回测）：共识分 top10-20% 的命中富集约 2.3x——用于从大量候选里挑高分个体。多批次结果合并请用 galatea_rank_aggregate。' +
+      '触发词：排序候选、共识打分、挑高分、排个序、top 候选、candidate ranking。',
+    parameters: {
+      candidates: { type: 'string', description: '候选数据 JSON 文本（与 csv_path 二选一）。数组：[{"candidate_id":"c1","ipsae_min_p1":0.9,"ipsae_min_p2":0.8}, ...]；或紧凑对象 {"c1":{"p1":0.9},"c2":{"p1":0.5}}；也接受 {"scores":{...}} 嵌套或 {"ranking":[...]} 前序结果' },
+      csv_path: { type: 'string', description: '或：候选表 CSV 绝对路径（表头含 id 列 + 预测器分数列）' },
+      score_prefix: { type: 'string', description: '分数列前缀（缺省 ipsae_min_，作用于 CSV 列与扁平 JSON 字段）' },
+    },
+    op: 'rank.consensus',
+    timeoutMs: 120_000,
+  })))
+
+  // ---------------------------------------------------------------------
+  // galatea_rank_aggregate — 多批次排序结果聚合（全局统一重排 + CSV）
+  // ---------------------------------------------------------------------
+  disposers.push(ctx.tools.register(galateaTool({
+    name: 'galatea_rank_aggregate',
+    description:
+      '多批次共识排序结果聚合：把若干批次（galatea_rank 前序结果 / 候选数组 / CSV 路径 / 文件路径混合）合并为统一全局排名并写出 CSV。' +
+      '跨批次使用同一确定性排序规则（不平均批内排名）；输出重复 candidate_id 检查。批内 rank 不沿用——每个候选在全表中只排一次。' +
+      '触发词：合并批次、聚合排序、多批汇总、统一排名。',
+    parameters: {
+      batches: { type: 'string', description: '批次 JSON 文本（数组）：元素可为 CSV 路径字符串 / 候选数组 / {"batch_id":"b1","candidates":[...] 或 "csv_path":"..." 或 "ranking":[...]}' },
+      output_csv: { type: 'string', description: '合并结果 CSV 输出绝对路径（必填）' },
+      overwrite: { type: 'boolean', description: '覆盖已存在的 output_csv（缺省 false）' },
+    },
+    op: 'rank.aggregate',
     timeoutMs: 300_000,
   })))
 

@@ -19,7 +19,9 @@ op 一览（v0.1）：
   interface  复合物界面分析（接触/氢键/盐桥/SASA/pLDDT）
   score      序列理化打分（批量）
   inspect    结构 QC（链/几何异常/pLDDT 分布）
-  cluster    候选聚类（同一性矩阵 + 贪心代表集）
+   cluster    候选聚类（同一性矩阵 + 贪心代表集）
+   rank.consensus  多预测器等权共识排序
+   rank.aggregate  多批次排序结果聚合并输出 CSV
 """
 import json
 import os
@@ -190,6 +192,25 @@ def op_cluster(args):
         sequences, threshold=float(args.get("threshold") or 0.8))}
 
 
+# ---------------------------------------------------------------------------
+# op: rank.consensus / rank.aggregate — 候选确定性共识排序
+# ---------------------------------------------------------------------------
+def op_rank_consensus(args):
+    from rank_tools import RankInputError, rank_consensus
+    try:
+        return {"ok": True, "result": rank_consensus(args)}
+    except (RankInputError, OSError) as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+def op_rank_aggregate(args):
+    from rank_tools import RankInputError, rank_aggregate
+    try:
+        return {"ok": True, "result": rank_aggregate(args)}
+    except (RankInputError, OSError) as exc:
+        return {"ok": False, "error": str(exc)}
+
+
 OPS = {
     "status": op_status,
     "setup": op_setup,
@@ -199,6 +220,8 @@ OPS = {
     "score": op_score,
     "inspect": op_inspect,
     "cluster": op_cluster,
+    "rank.consensus": op_rank_consensus,
+    "rank.aggregate": op_rank_aggregate,
 }
 
 

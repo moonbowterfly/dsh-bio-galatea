@@ -24,8 +24,8 @@ const toolCount = TOOLS_MANIFEST.length
 
 const opsSrc = read('python/galatea_ops.py')
 const opsNames = new Set([
-  ...[...opsSrc.matchAll(/^\s*"([a-z0-9_]+)":\s*op_/gm)].map((m) => m[1]),   // OPS = { "x": op_x, ... }
-  ...[...opsSrc.matchAll(/OPS\["([a-z0-9_]+)"\]\s*=/g)].map((m) => m[1]),      // OPS["x"] = op_x
+  ...[...opsSrc.matchAll(/^\s*"([a-z0-9_.]+)":\s*op_/gm)].map((m) => m[1]),   // OPS = { "x"/"ns.x": op_x, ... }
+  ...[...opsSrc.matchAll(/OPS\["([a-z0-9_.]+)"\]\s*=/g)].map((m) => m[1]),      // OPS["x"/"ns.x"] = op_x
 ])
 const opCount = opsNames.size
 

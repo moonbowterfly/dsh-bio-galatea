@@ -6,8 +6,8 @@
 //
 // 解释器选择链（与 src/python.js 对齐）：GALATEA_PYTHON > 私有 venv > CONDA_PREFIX > 兜底
 import { spawn } from 'node:child_process'
-import { existsSync } from 'node:fs'
-import { homedir } from 'node:os'
+import { existsSync, rmSync } from 'node:fs'
+import { homedir, tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -94,6 +94,43 @@ console.log('L1 协议与逻辑')
 {
   const r = await runOp('cluster', { sequences: ['ACDEFGHIKL', 'ACDEFGHIKL'], threshold: 0.5 })
   check('cluster: 完全相同 → 1 簇', r.json?.result?.n_clusters === 1)
+}
+
+{
+  const r = await runOp('rank.consensus', {
+    candidates: JSON.stringify([
+      { candidate_id: 'c1', ipsae_min_p1: 0.9, ipsae_min_p2: 0.8 },
+      { candidate_id: 'c2', ipsae_min_p1: 0.5, ipsae_min_p2: 0.4 },
+      { candidate_id: 'c3', ipsae_min_p1: 0.7, ipsae_min_p2: 0.6 },
+    ]),
+  })
+  const res = r.json?.result
+  check('rank: 共识均值（c1=0.85）与排序', res?.ranking?.[0]?.candidate_id === 'c1' &&
+    Math.abs((res?.ranking?.[0]?.consensus ?? 0) - 0.85) < 1e-9, JSON.stringify(res?.ranking?.[0]).slice(0, 160))
+  check('rank: strong 档（0.85 ≥ 0.73）', res?.ranking?.[0]?.tier === 'strong')
+  check('rank: 全表排序单调不增', Array.isArray(res?.ranking) &&
+    res.ranking.every((row, i) => i === 0 || res.ranking[i - 1].consensus >= row.consensus))
+}
+
+{
+  const outCsv = join(tmpdir(), `galatea-rank-smoke-${Date.now()}.csv`)
+  const r = await runOp('rank.aggregate', {
+    batches: JSON.stringify([
+      { batch_id: 'b1', candidates: [{ candidate_id: 'x1', ipsae_min_p1: 0.9 }, { candidate_id: 'x2', ipsae_min_p1: 0.3 }] },
+      { batch_id: 'b2', candidates: [{ candidate_id: 'y1', ipsae_min_p1: 0.7 }, { candidate_id: 'y2', ipsae_min_p1: 0.5 }] },
+    ]),
+    output_csv: outCsv,
+  })
+  const res = r.json?.result
+  check('rank.aggregate: 2 批 4 候选 → 全局重排 + CSV 落盘', res?.n_batches === 2 &&
+    res?.ranking?.length === 4 && existsSync(outCsv), `n=${res?.ranking?.length}`)
+  check('rank.aggregate: 跨批首位（x1=0.9）', res?.ranking?.[0]?.candidate_id === 'x1')
+  try { rmSync(outCsv, { force: true }) } catch {}
+}
+
+{
+  const r = await runOp('rank.consensus', { candidates: 'not-json-plain-string' })
+  check('rank: 非法输入不做假成功', !(r.json?.ok === true && r.json?.result != null), JSON.stringify(r.json).slice(0, 140))
 }
 
 {

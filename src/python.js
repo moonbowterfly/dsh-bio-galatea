@@ -100,8 +100,11 @@ export function pythonExe() {
   return cachedExe
 }
 
-/** op 名 → 对外工具名（v0.1 全部同名；保留映射层以便后续特殊命名）。 */
-const OP_TOOL = {}
+/** op 名 → 对外工具名（rank 两 op 各自对应一个工具）。 */
+const OP_TOOL = {
+  'rank.consensus': 'galatea_rank',
+  'rank.aggregate': 'galatea_rank_aggregate',
+}
 
 function toolNameFor(op) {
   return OP_TOOL[op] ?? `galatea_${op}`

@@ -6,7 +6,7 @@ language: python
 
 # galatea-expert — 蛋白质结构预测与设计主指引
 
-> 插件：dsh-bio-galatea（G 系列蛋白质工具域）｜ 8 工具：`galatea_status / setup / mpnn / fold / interface / score / inspect / cluster`
+> 插件：dsh-bio-galatea（G 系列蛋白质工具域）｜ 10 工具：`galatea_status / setup / mpnn / fold / interface / score / inspect / cluster / rank / rank_aggregate`
 > 定位：**本机可承担**的蛋白质设计计算（序列设计、单链折叠、界面与序列分析、聚类）；
 > **不承担**重型 co-folding（AF2/AF3/Boltz 复合物预测——走外部服务，产物回本插件分析）。
 
@@ -29,6 +29,8 @@ language: python
 | 序列质量过滤（批量） | `galatea_score` | pI/净电荷/GRAVY/疏水矩/**聚集代理**（阈值判读：低<0.35 / 中 0.35-0.55 / 高>0.55） |
 | 结构质量检查 | `galatea_inspect` | clash（<1.5Å）+ pLDDT 分位；提交前 QC |
 | 大量候选要选多样性代表 | `galatea_cluster` | 同一性聚类（缺省 0.8）+ 贪心代表集；输入按 score 降序让高分优先当代表 |
+| 多预测器分数 → 共识挑高分（排序） | `galatea_rank` | 输入候选表（JSON 文本或 CSV 路径；分数列前缀缺省 `ipsae_min_`）；输出共识分 + 档位（strong≥0.73 / medium≥0.65 / weak≥0.2）+ 排名；数据口径：共识 top10-20% 命中富集约 2.3x |
+| 多批结果合并统一排名 | `galatea_rank_aggregate` | `batches`（前序结果 / 候选数组 / CSV 路径混合）→ 全局重排 + `output_csv` 落盘（必填） |
 
 ## 三、典型工作流
 

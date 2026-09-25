@@ -23,7 +23,7 @@
 | 文件 | 职责 |
 |---|---|
 | `index.js` | 主模块：`inject=['tools','skills']`（仅必选）；`webServer` 走 apply 内动态注入（非 web 部署时工具照常注册） |
-| `tools.js` | 8 语义化工具（`defineTool`）；**parameters/schema 是 agent 可见能力的唯一真相** |
+| `tools.js` | 10 语义化工具（`defineTool`）；**parameters/schema 是 agent 可见能力的唯一真相** |
 | `capabilities.js` | `TOOLS_MANIFEST` 单源（工具清单 + cost_class/network/mutability 元数据），供 integration 与宿主消费 |
 | `integration.js` | hosted-domain 集成协议 v1：`/health`、`/v1/status`、`/v1/capabilities`（loopback-only 三层守卫） |
 | `python.js` | 解释器解析链 + `callGalatea`（JSON stdin 协议）+ `stampProvenance` |
@@ -63,7 +63,7 @@
 
 选择标准 = `import torch` 成功（进程内缓存；`setup` 成功后自动失效重探）。
 
-## 4. 工具 / op 对照（8 工具 = 8 op）
+## 4. 工具 / op 对照（10 工具 = 10 op）
 
 | 工具 | op | capability | 说明 |
 |---|---|---|---|
@@ -75,6 +75,8 @@
 | `galatea_score` | score | screening | 序列理化打分 |
 | `galatea_inspect` | inspect | analysis | 结构 QC |
 | `galatea_cluster` | cluster | analysis | 候选聚类 |
+| `galatea_rank` | rank.consensus | screening | 候选共识排序（等权共识 + 分档 strong≥0.73） |
+| `galatea_rank_aggregate` | rank.aggregate | screening | 多批次聚合 → 全局排名 CSV |
 
 ## 5. 集成协议（宿主消费，v1 只读）
 

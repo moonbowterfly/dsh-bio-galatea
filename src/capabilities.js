@@ -54,6 +54,12 @@ export const TOOLS_MANIFEST = [
     cost_class: 'medium', network: 'none', mutability: 'read_only', status: 'ready',
     requires: ['runtime.analysis'],
     summary: '候选聚类（序列同一性矩阵 + 贪心代表集）：设计多样性选择，输出代表序列' },
+  { name: 'galatea_rank', capability: 'galatea.screen.rank', category: 'screening',
+    cost_class: 'light', network: 'none', mutability: 'read_only', status: 'ready',
+    summary: '候选共识排序（确定性等权共识 + 分档 + 统计）：多预测器分数 → 共识分/档位/排名（1,440 条湿实验口径：top10-20% 命中富集约 2.3x）' },
+  { name: 'galatea_rank_aggregate', capability: 'galatea.screen.rank-aggregate', category: 'screening',
+    cost_class: 'light', network: 'none', mutability: 'writes_output', status: 'ready',
+    summary: '多批次排序结果聚合：合并为统一全局排名 CSV（跨批同一确定性排序规则 + 重复 id 检查）' },
 ]
 
 export const CONTRACT_VERSION = '1'
