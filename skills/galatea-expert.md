@@ -6,7 +6,7 @@ language: python
 
 # galatea-expert — 蛋白质结构预测与设计主指引
 
-> 插件：dsh-bio-galatea（G 系列蛋白质工具域）｜ 14 工具：`galatea_status / setup / mpnn / fold / interface / score / inspect / cluster / rank / rank_aggregate / loop / contact_consensus / redesign / refold`
+> 插件：dsh-bio-galatea（G 系列蛋白质工具域）｜ 15 工具：`galatea_status / setup / mpnn / fold / interface / score / inspect / cluster / rank / rank_aggregate / loop / contact_consensus / redesign / refold / ingest`
 > 定位：**本机可承担**的蛋白质设计计算（序列设计、单链折叠、界面与序列分析、聚类）；
 > **不承担**重型 co-folding（AF2/AF3/Boltz 复合物预测——走外部服务，产物回本插件分析）。
 
@@ -33,6 +33,7 @@ language: python
 | 多批结果合并统一排名 | `galatea_rank_aggregate` | `batches`（前序结果 / 候选数组 / CSV 路径混合）→ 全局重排 + `output_csv` 落盘（必填） |
 | 已有多轮候选，规划下一轮 | `galatea_loop` | `action=log/next/status`；登记候选分数与 parent_id，按资格门、谱系、模型不确定性和序列簇生成下一轮计划；只记账和规划，不执行生成 |
 | 多个预测复合物要找稳定界面与 anchor | `galatea_contact_consensus` | `models` 或 `models_dir`+`glob`；汇总残基/pair 频率与 residue/edge Jaccard；链参数缺省时按角色统一不同模型的链 ID，并返回 `chain_label_mappings`；coverage <6 时不返回 anchors；仅作设计控制，不参与排序 |
+| 多个生成来源的候选要统一留账 | `galatea_ingest` | `structures`、`structs_dir`、`candidates_file`、`records` 四选一；每条候选必须有 `target_id`，身份键为 target + design；结构对象写入 SHA256 与显式 role；namespaced `raw_scores` 的 direction/version 放在 `.schema.json` sidecar；显式 `parent_id` 解析 lineage，缺失父本记 `DANGLING_PARENT` 并可在后续 append 解析；仅处理本地文件 |
 | 有 binder+target 结构，要按区域约束重设计 | `galatea_redesign` | `binder_chain` 与 `mode` 必填推荐；interface-refine hard-freeze ≤4 Å 接触，anchor-preserving 需接触频率（≥0.7 冻结），scaffold-rescue 固定接触与显式 anchor、允许 CORE 改动；三态 rSASA 区域 + 双 shell；`fixed_positions` / `design_positions` 覆盖 preset |
 | 想确认 binder 离开 target 后能否折回参考构象 | `galatea_refold` | `structure_path` + `binder_chain`；可覆盖 `sequence` / `reference_binder_path`；输出 RMSD、F2Å、pLDDT 与二级结构；F2Å 仅记录，现有阈值尚未校准 |
 

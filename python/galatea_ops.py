@@ -23,6 +23,8 @@ op 一览（v0.1）：
    rank.consensus  多预测器等权共识排序
    rank.aggregate  多批次排序结果聚合并输出 CSV
   loop            多轮设计战役记账、评估与下一轮计划（不执行生成）
+  contact_consensus 多模型界面接触一致性分析
+  ingest          多源候选摄入与统一 JSONL 台账
   redesign        区域约束式 binder 序列重设计（MPNN）
   refold          binder 单体复折叠救援检查（ESMFold）
 """
@@ -234,6 +236,16 @@ def op_contact_consensus(args):
 
 
 # ---------------------------------------------------------------------------
+# op: ingest — local candidate ingestion into a unified JSONL ledger
+# ---------------------------------------------------------------------------
+def op_ingest(args):
+    # Reuses contact_tools for CIF occupancy fallback; keep the package pyc-free.
+    sys.dont_write_bytecode = True
+    from ingest_tools import run_ingest
+    return run_ingest(args)
+
+
+# ---------------------------------------------------------------------------
 # op: redesign — 区域约束式 binder 重设计
 # ---------------------------------------------------------------------------
 def op_redesign(args):
@@ -264,6 +276,7 @@ OPS = {
     "rank.aggregate": op_rank_aggregate,
     "loop": op_loop,
     "contact_consensus": op_contact_consensus,
+    "ingest": op_ingest,
     "redesign": op_redesign,
     "refold": op_refold,
 }

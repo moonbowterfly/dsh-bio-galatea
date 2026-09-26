@@ -24,7 +24,7 @@
 | 文件 | 职责 |
 |---|---|
 | `index.js` | 主模块：`inject=['tools','skills']`（仅必选）；`webServer` 走 apply 内动态注入（非 web 部署时工具照常注册） |
-| `tools.js` | 14 语义化工具（`defineTool`）；**parameters/schema 是 agent 可见能力的唯一真相** |
+| `tools.js` | 15 语义化工具（`defineTool`）；**parameters/schema 是 agent 可见能力的唯一真相** |
 | `capabilities.js` | `TOOLS_MANIFEST` 单源（工具清单 + cost_class/network/mutability 元数据），供 integration 与宿主消费 |
 | `integration.js` | hosted-domain 集成协议 v1：`/health`、`/v1/status`、`/v1/capabilities`（loopback-only 三层守卫） |
 | `python.js` | 解释器解析链 + `callGalatea`（JSON stdin 协议）+ `stampProvenance` |
@@ -34,13 +34,14 @@
 
 | 文件 | 职责 |
 |---|---|
-| `galatea_ops.py` | 协议分发器（14 op）；三流 UTF-8；`_sanitize_json`；异常契约（结构化业务错误 + stderr Traceback 头） |
+| `galatea_ops.py` | 协议分发器（15 op）；三流 UTF-8；`_sanitize_json`；异常契约（结构化业务错误 + stderr Traceback 头） |
 | `components.py` | 组件探测（status）+ 零手动自举（setup：env / mpnn / esmfold，幂等） |
 | `mpnn_design.py` | MPNN 包装：spawn vendor LigandMPNN `run.py` + 输出解析（seqs/*.fa） |
 | `redesign_tools.py` | binder 区域/接触/SASA 计算、preset mask 生成与 MPNN 重设计编排 |
 | `contact_tools.py` | 多模型重原子接触图、残基/pair 频率与 residue/edge Jaccard 矩阵；自动链角色归一到首个有效模型并返回映射；不计算排序分数 |
 | `fold_esm.py` + `_fold_worker.py` | ESMFold 编排 + 推理 worker（模型加载隔离在一次性子进程） |
 | `refold_tools.py` | ESMFold 单体复折叠、序列对齐 Cα RMSD/F2Å、pLDDT、phi/psi 二级结构指标 |
+| `ingest_tools.py` | 本地结构/候选文件摄入、design_id 冲突处理与确定性 JSONL 台账写入 |
 | `struct_analysis.py` | 界面分析（interface）+ 结构 QC（inspect）；biopython |
 | `seq_analysis.py` | 序列理化打分（score）+ 聚类（cluster） |
 | `seqio_lite.py` | FASTA 读写（最小实现） |
@@ -68,7 +69,7 @@
 
 选择标准 = `import torch` 成功（进程内缓存；`setup` 成功后自动失效重探）。
 
-## 4. 工具 / op 对照（14 工具 = 14 op）
+## 4. 工具 / op 对照（15 工具 = 15 op）
 
 | 工具 | op | capability | 说明 |
 |---|---|---|---|
@@ -86,6 +87,7 @@
 | `galatea_contact_consensus` | contact_consensus | design | 多模型接触频率与 Jaccard 矩阵、anchor；只作设计控制信号 |
 | `galatea_redesign` | redesign | design | 区域约束式 MPNN 重设计（contact/anchor/双 shell/CORE/BOUNDARY/SURFACE masks） |
 | `galatea_refold` | refold | qc | binder 单体复折叠救援检查（RMSD/F2Å/pLDDT/二级结构；阈值未校准） |
+| `galatea_ingest` | ingest | design | 摄入本地多源候选并写入统一 JSONL 台账；以 target_id + design_id 标识记录、结构带哈希与 role、分数 schema 写 sidecar、只解析显式 parent_id |
 
 ## 5. 集成协议（宿主消费，v1 只读）
 

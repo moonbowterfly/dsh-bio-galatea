@@ -11,7 +11,7 @@
 
 A standard protein-design pipeline (binders / enzymes / nanobodies) is scattered across a dozen
 tools: ProteinMPNN for sequences, ESMFold for fold validation, interface analysis for binding
-screening, clustering for candidate selection. This plugin gathers them into **14 semantic tools**
+screening, clustering for candidate selection. This plugin gathers them into **15 semantic tools**
 that agents in dsh (and the genie host) can call directly — with **explicit local boundaries**
 (heavy co-folding is honestly redirected to external services instead of pretending capability).
 
@@ -30,7 +30,7 @@ that agents in dsh (and the genie host) can call directly — with **explicit lo
    Contact consensus: galatea_contact_consensus # multi-model contact frequencies and anchors
 ```
 
-## The 14 tools
+## The 15 tools
 
 | Tool | Purpose | Typical time |
 |---|---|---|
@@ -48,6 +48,11 @@ that agents in dsh (and the genie host) can call directly — with **explicit lo
 | `galatea_contact_consensus` | Multi-model residue/pair contact frequencies, Jaccard matrices and anchors; automatic chain roles are normalized to the first valid model and exposed in `chain_label_mappings`; design control only | seconds–minutes |
 | `galatea_redesign` | Region-constrained binder redesign using contact, anchor, and rSASA regions | minutes |
 | `galatea_refold` | ESMFold monomer refold metrics including the Cα fraction within 2 Å (F2Å) | CPU minutes |
+| `galatea_ingest` | Ingest local PDB/CIF, CSV/JSON/JSONL, or inline candidates into a conflict-aware JSONL ledger | seconds–minutes |
+
+## Candidate ledger (`galatea_ingest`)
+
+Each candidate requires stable `target_id` and `design_id`; together they identify a record, so matching sequences from different targets remain separate. The ledger also stores `seq_sha1` and `sequence_group_id` without merging distinct design instances. Structures are objects containing the absolute path, file SHA256, explicit `role`, predictor/model/seed, and binder/target chains. A missing role becomes `other` with a warning. Scores stay in namespaced `raw_scores`; their `direction` and `version` metadata are written to the `<ledger>.schema.json` sidecar, with no unified quality score. Lineage resolves only explicit `parent_id` values. Missing parents remain as `DANGLING_PARENT` and resolve after a later append adds the parent; sequence similarity is never used to infer lineage.
 
 ## Hardware boundaries (stated honestly)
 

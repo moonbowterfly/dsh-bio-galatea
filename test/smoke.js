@@ -874,6 +874,262 @@ print(json.dumps({
 
 // ── L3 重组件（--heavy） ─────────────────────────────────────────────────────
 console.log()
+// G1 ingest v0: local sources, deterministic ledger, conflicts, and failure shapes.
+console.log()
+console.log('G1 ingest')
+if (existsSync(FIXTURE) && hasBio) {
+  const ingestSnippet = `
+import csv, hashlib, json, os, shlex, sys, tempfile
+from pathlib import Path
+sys.path.insert(0, ${JSON.stringify(PYDIR)})
+from Bio.PDB import MMCIFIO, PDBParser
+from contact_tools import _parse_model, _protein_residues
+from ingest_tools import FIELDS, run_ingest
+
+fixture = ${JSON.stringify(FIXTURE)}
+checks = {}
+def mark(name, ok, detail=''):
+    checks[name] = {'ok': bool(ok), 'detail': str(detail)}
+def read_row(path, index=0):
+    return json.loads(Path(path).read_text(encoding='utf-8').splitlines()[index])
+def write(path, content):
+    with open(path, 'w', encoding='utf-8', newline='') as handle:
+        handle.write(content)
+
+with tempfile.TemporaryDirectory(prefix='galatea-ingest-smoke-') as temp:
+    root = Path(temp)
+    model = _parse_model(fixture)
+    chains = [(str(chain.id), _protein_residues(chain)) for chain in model.get_chains()]
+    expected_chain = sorted(chains, key=lambda item: (len(item[1]), item[0].casefold(), item[0]))[0][0]
+    pdb_ledger = root / 'structure.jsonl'
+    pdb_result = run_ingest({'structures':[fixture], 'ledger':str(pdb_ledger), 'mode':'replace',
+                            'target_id':'target1', 'structure_role':'cofold'})
+    pdb_row = read_row(pdb_ledger) if pdb_ledger.exists() else {}
+    mark('structure', pdb_result.get('ok') and pdb_row.get('binder_chain') == expected_chain and
+         bool(pdb_row.get('sequence')) and pdb_row.get('seq_sha1') == hashlib.sha1(pdb_row['sequence'].encode()).hexdigest(),
+         {'expected_chain':expected_chain,'actual_chain':pdb_row.get('binder_chain'),'length':len(pdb_row.get('sequence') or '')})
+    structure_object = pdb_row.get('structures',[{}])[0]
+    mark('schema_paths', set(pdb_row) == set(FIELDS) and structure_object.get('path') == os.path.realpath(fixture) and
+         os.path.isabs(pdb_row.get('provenance',{}).get('source_path','')))
+    mark('structure_object_role_enum', set(structure_object) == {'path','sha256','role','predictor','model','seed','binder_chain','target_chains'} and
+         structure_object.get('role') == 'cofold' and len(structure_object.get('sha256','')) == 64 and
+         structure_object.get('binder_chain') == pdb_row.get('binder_chain') and isinstance(structure_object.get('target_chains'),list))
+    default_role_ledger = root / 'default-role.jsonl'
+    default_role_result = run_ingest({'structures':[fixture], 'ledger':str(default_role_ledger), 'mode':'replace',
+                                      'target_id':'target1'})
+    default_role_row = read_row(default_role_ledger) if default_role_ledger.exists() else {}
+    mark('default_role_warning', default_role_result.get('ok') and
+         default_role_row.get('structures',[{}])[0].get('role') == 'other' and
+         any('role unresolved' in warning for warning in default_role_result.get('warnings',[])))
+
+    cif_path = root / 'missing-occupancy.cif'
+    cif_ledger = root / 'missing-occupancy.jsonl'
+    cif_ok = False
+    cif_detail = ''
+    try:
+        structure = PDBParser(QUIET=True).get_structure('mini', fixture)
+        writer = MMCIFIO(); writer.set_structure(structure); writer.save(str(cif_path))
+        lines = cif_path.read_text(encoding='utf-8').splitlines(keepends=True)
+        removed = False
+        for loop_start, line in enumerate(lines):
+            if line.strip().lower() != 'loop_':
+                continue
+            end = loop_start + 1
+            while end < len(lines) and lines[end].lstrip().startswith('_'):
+                end += 1
+            headers = [item.strip().split()[0] for item in lines[loop_start + 1:end]]
+            if '_atom_site.occupancy' not in headers:
+                continue
+            occ_index = headers.index('_atom_site.occupancy')
+            row_index = end
+            while row_index < len(lines):
+                stripped = lines[row_index].strip()
+                if not stripped or stripped.startswith('#') or stripped.lower() == 'loop_' or stripped.startswith('_'):
+                    break
+                values = shlex.split(stripped)
+                if len(values) != len(headers):
+                    raise ValueError('MMCIFIO atom_site row did not match its header')
+                del values[occ_index]
+                lines[row_index] = ' '.join(values) + ('\\n' if lines[row_index].endswith('\\n') else '')
+                row_index += 1
+            del lines[loop_start + 1 + occ_index]
+            removed = True
+            break
+        write(cif_path, ''.join(lines))
+        cif_result = run_ingest({'structures':[str(cif_path)], 'ledger':str(cif_ledger), 'mode':'replace',
+                                 'target_id':'target1', 'structure_role':'cofold'})
+        cif_row = read_row(cif_ledger) if cif_ledger.exists() else {}
+        cif_ok = removed and cif_result.get('ok') and cif_row.get('sequence') == pdb_row.get('sequence')
+        cif_detail = {'occupancy_removed':removed,'chain':cif_row.get('binder_chain'),'length':len(cif_row.get('sequence') or '')}
+    except Exception as exc:
+        cif_detail = type(exc).__name__ + ': ' + str(exc)
+    mark('missing_occupancy_cif', cif_ok, cif_detail)
+
+    write(root/'candidates.csv', 'design_id,sequence,generator,model_score\\ncsv1,ACD,gen_csv,1.25\\n')
+    write(root/'candidates.json', json.dumps([{'design_id':'json1','sequence':'EFG'}]))
+    write(root/'candidates.jsonl', json.dumps({'design_id':'jsonl1','sequence':'HIK'}) + '\\n')
+    file_results = {}
+    for ext in ('csv','json','jsonl'):
+        ledger = root/(ext+'.jsonl')
+        result = run_ingest({'candidates_file':str(root/('candidates.'+ext)), 'ledger':str(ledger), 'mode':'replace',
+                             'target_id':'target1',
+                             'score_schema':{'gen_csv.model_score':{'direction':'lower_better','version':'v1'}}})
+        file_results[ext] = bool(result.get('ok') and ledger.exists() and read_row(ledger).get('design_id') == ext+'1')
+    mark('candidate_formats', all(file_results.values()), file_results)
+    mark('csv_score_column', read_row(root/'csv.jsonl').get('raw_scores',{}).get('gen_csv.model_score') == 1.25)
+
+    record_ledger = root/'records.jsonl'
+    record_result = run_ingest({'records':[{'design_id':'direct1','sequence':'ACD','generator':'local'}],
+                                'ledger':str(record_ledger),'mode':'replace','target_id':'target1',
+                                'target_sequence':'M K T'})
+    direct = read_row(record_ledger) if record_ledger.exists() else {}
+    mark('records_schema_defaults', record_result.get('ok') and set(direct) == set(FIELDS) and
+         direct.get('binder_chain') is None and direct.get('backbone_id') is None and direct.get('hotspot_set') == [] and
+         direct.get('raw_scores') == {} and direct.get('structures') == [] and direct.get('provenance',{}).get('source_type') == 'records')
+    mark('known_sha1', direct.get('seq_sha1') == '5c8072153f0ee1a27d9b8b1166fed8bb1c4b853f')
+    mark('target_identity_and_source_uid', direct.get('target_id') == 'target1' and
+         direct.get('target_sha256') == hashlib.sha256(b'MKT').hexdigest() and
+         direct.get('sequence_group_id') == hashlib.sha1(b'target1|ACD').hexdigest() and
+         direct.get('source_uid') == 'local::target1:direct1' and len(direct.get('source_batch_id','')) == 16)
+
+    first = {'design_id':'dup','sequence':'AAA','generator':'first','raw_scores':{'shared':1},'hotspot_set':['H1']}
+    later = {'design_id':'dup','sequence':'BBB','generator':'last','raw_scores':{'shared':2,'later':3},'hotspot_set':['H1','H2']}
+    conflicts = {}
+    for policy in ('error','keep_first','keep_last','merge'):
+        ledger = root/('conflict-'+policy+'.jsonl')
+        conflicts[policy] = run_ingest({'records':[first,later], 'ledger':str(ledger), 'mode':'replace', 'on_conflict':policy,
+                                        'target_id':'target1', 'score_namespace':'test',
+                                        'score_schema':{'test.shared':{'direction':'higher_better','version':'v1'},
+                                                        'test.later':{'direction':'lower_better','version':'v1'}}})
+    first_row = read_row(root/'conflict-keep_first.jsonl')
+    last_row = read_row(root/'conflict-keep_last.jsonl')
+    merge_row = read_row(root/'conflict-merge.jsonl')
+    error = conflicts['error']
+    mark('conflict_error', error.get('ok') is False and error.get('stats',{}).get('n_conflict') == 1 and
+         error.get('stats',{}).get('conflicts',[{}])[0].get('design_id') == 'dup' and not (root/'conflict-error.jsonl').exists())
+    mark('conflict_keep_first', first_row.get('sequence') == 'AAA' and first_row.get('generator') == 'first')
+    mark('conflict_keep_last', last_row.get('sequence') == 'BBB' and last_row.get('generator') == 'last')
+    mark('conflict_merge', merge_row.get('sequence') == 'AAA' and merge_row.get('raw_scores') == {'test.shared':1,'test.later':3} and
+         merge_row.get('hotspot_set') == ['H1','H2'])
+
+    append_ledger = root/'append.jsonl'
+    appended_first = run_ingest({'records':[{'design_id':'z','sequence':'AAA'},{'design_id':'a','sequence':'CCC'},{'design_id':'c','sequence':'DDD'}],
+                                 'ledger':str(append_ledger),'mode':'replace','target_id':'target1'})
+    appended_second = run_ingest({'records':[{'design_id':'b','sequence':'EEE'},{'design_id':'a','sequence':'GGG'}],
+                                  'ledger':str(append_ledger),'mode':'append','on_conflict':'keep_last','target_id':'target1'})
+    appended = [json.loads(line) for line in append_ledger.read_text(encoding='utf-8').splitlines()]
+    mark('append_and_sort', appended_first.get('ok') and appended_second.get('ok') and
+         appended_second.get('stats',{}).get('n_new') == 1 and appended_second.get('stats',{}).get('n_conflict') == 1 and
+         appended_second.get('stats',{}).get('n_written') == 4 and
+         [row['design_id'] for row in appended] == ['a','b','c','z'] and appended[0]['sequence'] == 'GGG')
+
+    stable_records = [{'design_id':'Z','sequence':'ACD'},{'design_id':'a','sequence':'EFG'}]
+    stable_a = root/'stable-a.jsonl'; stable_b = root/'stable-b.jsonl'
+    stable_result_a = run_ingest({'records':stable_records,'ledger':str(stable_a),'mode':'replace','target_id':'target1'})
+    stable_result_b = run_ingest({'records':stable_records,'ledger':str(stable_b),'mode':'replace','target_id':'target1'})
+    mark('deterministic_bytes', stable_result_a.get('ok') and stable_result_b.get('ok') and
+         stable_a.read_bytes() == stable_b.read_bytes() and
+         Path(str(stable_a)+'.schema.json').read_bytes() == Path(str(stable_b)+'.schema.json').read_bytes())
+
+    bad_csv = root/'bad.csv'; write(bad_csv, '')
+    missing_id = run_ingest({'records':[{'sequence':'ACD'}],'ledger':str(root/'missing-id.jsonl'),'target_id':'target1'})
+    empty_source = run_ingest({'records':[],'ledger':str(root/'empty.jsonl'),'target_id':'target1'})
+    malformed_csv = run_ingest({'candidates_file':str(bad_csv),'ledger':str(root/'bad-csv.jsonl'),'target_id':'target1'})
+    missing_path = run_ingest({'structures':[str(root/'absent.pdb')],'ledger':str(root/'missing-path.jsonl'),'target_id':'target1'})
+    mark('bad_inputs', all(item.get('ok') is False for item in (missing_id,empty_source,malformed_csv,missing_path)),
+         {key:item.get('error') for key,item in [('missing_id',missing_id),('empty',empty_source),('bad_csv',malformed_csv),('missing_path',missing_path)]})
+
+    score_file = root/'scores.csv'
+    write(score_file, 'design_id,score,flag\\nscore1,2.5,x\\n')
+    score_ledger = root/'scores-ledger.jsonl'
+    score_result = run_ingest({'records':[{'design_id':'score1','sequence':'ACD','raw_scores':{'score':'original'}}],
+                               'scores_file':str(score_file),'ledger':str(score_ledger),'mode':'replace',
+                               'target_id':'target1','source':'scorer','score_namespace':'scorer',
+                               'score_schema':{'scorer.score':{'direction':'lower_better','version':'v1'},
+                                               'scorer.flag':{'direction':'higher_better','version':'v1'}}})
+    score_row = read_row(score_ledger) if score_ledger.exists() else {}
+    score_schema_sidecar = json.loads(Path(str(score_ledger)+'.schema.json').read_text(encoding='utf-8'))
+    mark('scores_join', score_result.get('ok') and score_row.get('raw_scores') == {'scorer.score':'original','scorer.flag':'x'} and
+         score_row.get('provenance',{}).get('scores_path') == os.path.realpath(score_file) and
+         score_schema_sidecar.get('score_schema_by_batch',{}).get(score_row.get('source_batch_id')) ==
+         {'scorer.score':{'direction':'lower_better','version':'v1'},'scorer.flag':{'direction':'higher_better','version':'v1'}})
+    dry_path = root/'dry-run.jsonl'
+    dry = run_ingest({'records':[{'design_id':'dry','sequence':'ACD'}],'ledger':str(dry_path),'dry_run':True,'target_id':'target1'})
+    mark('dry_run', dry.get('ok') and dry.get('stats',{}).get('n_written') == 1 and not dry_path.exists())
+
+    identity_path = root/'target-identity.jsonl'
+    identity = run_ingest({'records':[{'design_id':'same','target_id':'t1','sequence':'ACD'},
+                                      {'design_id':'same','target_id':'t2','sequence':'ACD'}],
+                           'ledger':str(identity_path),'mode':'replace'})
+    identity_rows = [json.loads(line) for line in identity_path.read_text(encoding='utf-8').splitlines()] if identity_path.exists() else []
+    mark('same_sequence_different_targets_stay_distinct', identity.get('ok') and len(identity_rows) == 2 and
+         identity_rows[0].get('seq_sha1') == identity_rows[1].get('seq_sha1') and
+         identity_rows[0].get('sequence_group_id') != identity_rows[1].get('sequence_group_id'))
+
+    lineage_path = root/'lineage.jsonl'
+    child = run_ingest({'records':[{'design_id':'child','target_id':'t1','sequence':'ACD','parent_id':'parent'}],
+                        'ledger':str(lineage_path),'mode':'replace'})
+    child_row = read_row(lineage_path) if lineage_path.exists() else {}
+    dangling_ok = (child.get('ok') and child_row.get('lineage_status') == 'DANGLING_PARENT' and
+                   child_row.get('lineage_root') is None and
+                   any(item.startswith('DANGLING_PARENT:') for item in child.get('warnings',[])))
+    parent = run_ingest({'records':[{'design_id':'parent','target_id':'t1','sequence':'EFG'}],
+                         'ledger':str(lineage_path),'mode':'append'})
+    lineage_rows = [json.loads(line) for line in lineage_path.read_text(encoding='utf-8').splitlines()] if lineage_path.exists() else []
+    child_row = next((item for item in lineage_rows if item['design_id'] == 'child'), {})
+    parent_row = next((item for item in lineage_rows if item['design_id'] == 'parent'), {})
+    mark('dangling_parent_is_kept_then_resolved', dangling_ok and parent.get('ok') and
+         child_row.get('lineage_status') == 'RESOLVED' and child_row.get('lineage_root') == 'parent' and child_row.get('lineage_depth') == 1 and
+         parent_row.get('lineage_status') == 'ROOT' and parent_row.get('lineage_depth') == 0)
+
+    cycle_path = root/'cycle.jsonl'
+    cycle = run_ingest({'records':[{'design_id':'x','target_id':'t1','sequence':'ACD','parent_id':'y'},
+                                   {'design_id':'y','target_id':'t1','sequence':'EFG','parent_id':'x'}],
+                        'ledger':str(cycle_path),'mode':'replace'})
+    bad_role = run_ingest({'structures':[fixture],'ledger':str(root/'bad-role.jsonl'),'target_id':'t1','structure_role':'guess'})
+    mark('lineage_cycle_and_invalid_role_rejected', cycle.get('ok') is False and 'LINEAGE_CYCLE' in cycle.get('error','') and
+         bad_role.get('ok') is False and 'invalid structure_role' in bad_role.get('error',''))
+
+print(json.dumps({'checks':checks}, ensure_ascii=False))
+`
+  const r = await runPythonSnippet(ingestSnippet)
+  const checks = r.json?.checks || {}
+  if (!r.json) console.log('  ingest unit output:', (r.err || r.out || '').slice(-500))
+  check('ingest: structures source, automatic shortest chain, schema, and absolute paths', checks.structure?.ok && checks.schema_paths?.ok,
+    JSON.stringify(checks.structure?.detail))
+  check('ingest: structures are checksummed objects with a valid explicit role', checks.structure_object_role_enum?.ok)
+  check('ingest: missing structure role defaults to other with a warning', checks.default_role_warning?.ok)
+  check('ingest: CIF occupancy-missing fixture uses fallback parser', checks.missing_occupancy_cif?.ok,
+    JSON.stringify(checks.missing_occupancy_cif?.detail))
+  check('ingest: CSV / JSON / JSONL and CSV raw score columns', checks.candidate_formats?.ok && checks.csv_score_column?.ok,
+    JSON.stringify(checks.candidate_formats?.detail))
+  check('ingest: records schema defaults and known SHA1', checks.records_schema_defaults?.ok && checks.known_sha1?.ok)
+  check('ingest: target identity, target hash, sequence group, source UID, and batch ID', checks.target_identity_and_source_uid?.ok)
+  check('ingest: error / keep_first / keep_last / merge conflict policies', checks.conflict_error?.ok &&
+    checks.conflict_keep_first?.ok && checks.conflict_keep_last?.ok && checks.conflict_merge?.ok)
+  check('ingest: append 3 then 2 with one conflict and stable sort', checks.append_and_sort?.ok,
+    JSON.stringify(checks.append_and_sort?.detail))
+  check('ingest: same input to two paths is byte-identical', checks.deterministic_bytes?.ok)
+  check('ingest: missing ID / empty source / malformed CSV / missing path return ok:false', checks.bad_inputs?.ok,
+    JSON.stringify(checks.bad_inputs?.detail))
+  check('ingest: scores join preserves existing keys and records source path', checks.scores_join?.ok)
+  check('ingest: dry_run previews without writing', checks.dry_run?.ok)
+  check('ingest: same sequence across targets remains two candidate identities', checks.same_sequence_different_targets_stay_distinct?.ok)
+  check('ingest: dangling parent is retained and resolves when parent arrives', checks.dangling_parent_is_kept_then_resolved?.ok)
+  check('ingest: cycles and unknown structure roles are rejected', checks.lineage_cycle_and_invalid_role_rejected?.ok)
+} else {
+  skip('ingest: structure and file format unit coverage', 'fixture or biopython unavailable')
+}
+
+{
+  const bridgeDir = mkdtempSync(join(tmpdir(), 'galatea-ingest-op-'))
+  const ledger = join(bridgeDir, 'bridge.jsonl')
+  const r = await runOp('ingest', { records: [{ design_id: 'bridge1', sequence: 'ACD' }], ledger, mode: 'replace', target_id: 'target1' })
+  check('ingest: registered op writes one ledger row', r.code === 0 && r.json?.ok === true &&
+    r.json?.stats?.n_written === 1 && existsSync(ledger), JSON.stringify(r.json))
+  rmSync(bridgeDir, { recursive: true, force: true })
+}
+
 if (!HEAVY) {
   skip('mpnn: 真实序列设计', '默认跳过（--heavy 且 mpnn 组件就绪时运行）')
   skip('fold: 真实折叠', '默认跳过（--heavy 且 esmfold 就绪时运行）')

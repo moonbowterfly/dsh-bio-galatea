@@ -8,7 +8,7 @@
 ## 它解决什么问题
 
 蛋白质设计（binder / 酶 / 纳米抗体）的标准流程散布在十几个工具里：设计序列要 ProteinMPNN、
-验证折叠要 ESMFold、筛选结合要界面分析、选候选要聚类。本插件把它们收拢为 **14 个语义化工具**，
+验证折叠要 ESMFold、筛选结合要界面分析、选候选要聚类。本插件把它们收拢为 **15 个语义化工具**，
 让 dsh 里的 agent（及 genie 宿主）直接调用——并**明确标注本机边界**（co-folding 等重算力环节
 诚实指向外部服务，不伪装能力）。
 
@@ -30,7 +30,7 @@
    复折叠救援： galatea_refold                       # 离开 target 后检查 binder 单体折叠
 ```
 
-## 14 个工具一览
+## 15 个工具一览
 
 | 工具 | 用途 | 典型耗时 |
 |---|---|---|
@@ -48,6 +48,11 @@
 | `galatea_contact_consensus` | 多模型界面残基/pair 频率、Jaccard 矩阵与 anchor（设计控制信号，不参与排序） | 秒-分钟级 |
 | `galatea_redesign` | 区域约束重设计（冻结接触界面/anchor，支持 CORE/BOUNDARY/SURFACE） | 分钟级 |
 | `galatea_refold` | ESMFold 单体复折叠；序列对齐 Cα RMSD、F2Å、pLDDT 与二级结构一致性 | CPU 分钟级 |
+| `galatea_ingest` | 摄入本地 PDB/CIF、CSV/JSON/JSONL 或内联候选，按冲突策略写入统一 JSONL 台账 | 秒-分钟级 |
+
+## 候选摄入台账（`galatea_ingest`）
+
+每条候选都需要稳定的 `target_id` 和 `design_id`；记录身份由两者共同确定，因此同一序列属于不同靶点时会保留为不同记录。台账另存 `seq_sha1` 与 `sequence_group_id`，相同序列不会合并不同设计实例。结构以对象记录绝对路径、文件 SHA256、显式 `role`、预测器/模型/seed 及 binder/target 链；未提供角色时记为 `other` 并告警。分数保留在 namespaced `raw_scores`，对应的 `direction` 与 `version` 写入 `<ledger>.schema.json` sidecar，不计算统一质量分。`parent_id` 只按显式 ID 解析；缺失父本保留为 `DANGLING_PARENT`，后续 append 补入父本后会重算谱系，不按序列相似度推断。
 
 ## 区域重设计与单体复折叠
 
@@ -91,7 +96,7 @@ MIT（本插件自身）。第三方组件许可见上「依赖与致谢」。
 ## English
 
 **dsh-bio-galatea** is the protein structure prediction & design member of the G-series dsh plugins.
-Fourteen semantic tools cover sequence design (ProteinMPNN/SolubleMPNN/LigandMPNN), region-constrained
+Fifteen semantic tools cover sequence design (ProteinMPNN/SolubleMPNN/LigandMPNN), region-constrained
 redesign, single-chain folding and refolding rescue, complex-interface analysis, sequence scoring,
 structure QC, and diversity clustering — with zero-manual-setup (private venv auto-bootstrap) and honest capability
 boundaries (heavy co-folding stays with external services). Designed to coexist with

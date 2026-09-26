@@ -77,6 +77,10 @@ export const TOOLS_MANIFEST = [
     cost_class: 'heavy', network: 'none', mutability: 'writes_output', status: 'ready',
     requires: ['python.torch', 'runtime.esmfold'],
     summary: 'binder 单体复折叠救援检查：ESMFold 折叠后与参考构象做序列对齐 Cα RMSD、pLDDT 与二级结构一致性评估' },
+  { name: 'galatea_ingest', capability: 'galatea.design.ingest', category: 'design',
+    cost_class: 'medium', network: 'none', mutability: 'writes_output', status: 'ready',
+    requires: ['runtime.analysis'],
+    summary: '本地多源候选摄入：统一结构、候选文件和内联记录到可追溯 JSONL 台账' },
 ]
 
 export const CONTRACT_VERSION = '1'

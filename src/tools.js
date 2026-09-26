@@ -1,4 +1,4 @@
-// dsh-bio-galatea — 工具层（defineTool 注册，14 语义化工具，v0.1）
+// dsh-bio-galatea — 工具层（defineTool 注册，15 语义化工具，v0.1）
 // 全部执行走 python/galatea_ops.py（JSON stdin 协议）。
 // op 与工具对照（1:1）：status/setup/mpnn/fold/interface/score/inspect/cluster/loop/redesign/refold（同名）；rank.consensus→galatea_rank；rank.aggregate→galatea_rank_aggregate。
 import { defineTool } from '@deepseek-ai/dsh-tools'
@@ -367,6 +367,61 @@ export function registerTools(ctx) {
     },
     op: 'refold',
     timeoutMs: 1_800_000,
+  })))
+
+  // galatea_ingest: local multi-source candidate ingestion into a JSONL ledger
+  disposers.push(ctx.tools.register(galateaTool({
+    name: 'galatea_ingest',
+    description:
+      '摄入本地多源设计候选并写入统一 JSONL 候选台账：支持 PDB/CIF 结构文件或目录、CSV/JSON/JSONL 候选文件、内联 records，以及可选分数字段 join。' +
+      '每条记录必须有 target_id；candidate identity 按 target_id + design_id 区分，结构角色需显式指定，缺省记录为 other 并告警。' +
+      '可配置 append/replace、design_id 冲突策略、命名空间分数 schema 和 dry_run；只读本地文件，不访问网络。' +
+      '触发词：摄入、候选台账、ingest、ledger、多源合并。',
+    parameters: {
+      structures: {
+        type: 'array', items: { oneOf: [
+          { type: 'string' },
+          { type: 'object', additionalProperties: true, required: ['path'], properties: {
+            path: { type: 'string' }, design_id: { type: 'string' }, target_id: { type: 'string' },
+            role: { type: 'string', enum: ['design_backbone', 'generator_output', 'cofold', 'monomer_refold', 'relaxed', 'target', 'other'] },
+            predictor: { type: 'string' }, model: { type: 'string' }, seed: { type: ['string', 'integer'] },
+            binder_chain: { type: 'string' }, target_chains: { type: 'array', items: { type: 'string' } },
+            source_record_id: { type: 'string' }, generator: { type: 'string' }, generator_run: { type: 'string' },
+            source: { type: 'string' }, raw_scores: { type: 'object', additionalProperties: true },
+            score_schema: { type: 'object', additionalProperties: true },
+            backbone_id: { type: 'string' }, parent_id: { type: 'string' }, round: { type: 'integer' },
+            hotspot_set: { type: 'array', items: { type: 'string' } },
+          } },
+        ] }, description: '显式结构路径或结构描述对象列表；与 structs_dir、candidates_file、records 四选一' },
+      structs_dir: { type: 'string', description: '包含 PDB/CIF 的目录；默认匹配 *.pdb、*.ent、*.cif、*.mmcif' },
+      glob: { type: 'array', items: { type: 'string' }, description: 'structs_dir 内的文件模式列表，例如 ["predicted_*.cif"]' },
+      candidates_file: { type: 'string', description: '候选 CSV、JSON 或 JSONL 文件；与其他主来源四选一' },
+      records: { type: 'array', items: { type: 'object', additionalProperties: true }, description: '内联候选对象列表；与其他主来源四选一' },
+      target_id: { type: 'string', description: '靶点稳定身份；结构来源用此参数，候选文件/records 可逐条提供' },
+      target_sequence: { type: 'string', description: '可选靶点序列；去空白并转大写后计算 target_sha256' },
+      binder_chain: { type: 'string', description: '结构来源可选 binder 链；缺省自动选择最短蛋白链，平长时按链 ID 字典序' },
+      structure_role: { type: 'string', enum: ['design_backbone', 'generator_output', 'cofold', 'monomer_refold', 'relaxed', 'target', 'other'], description: '显式标注输入结构角色；缺省 other 并写 warning' },
+      source: { type: 'string', description: '来源身份；缺省使用 generator，或来源类型' },
+      scores_file: { type: 'string', description: '可选 CSV/JSON 分数表，按 scores_key join 到 raw_scores' },
+      scores_key: { type: 'string', description: 'scores_file 中用于 join 的列名；缺省 design_id' },
+      score_namespace: { type: 'string', description: 'raw_scores 未带命名空间时使用的前缀；缺省 generator/source' },
+      scores_namespace: { type: 'string', description: 'scores_file 未带命名空间的列使用的前缀；缺省 source' },
+      score_schema: {
+        type: 'object', additionalProperties: { type: 'object', additionalProperties: false,
+          properties: {
+            direction: { type: 'string', enum: ['higher_better', 'lower_better'], required: true },
+            version: { type: 'string', required: true },
+          } },
+        description: 'raw_scores 各命名键的方向和版本；有分数时必须覆盖每个键',
+      },
+      ledger: { type: 'string', required: true, description: 'JSONL 候选台账路径' },
+      mode: { type: 'string', enum: ['append', 'replace'], description: 'append 会读入并合并已有台账；缺省 append' },
+      on_conflict: { type: 'string', enum: ['error', 'keep_first', 'keep_last', 'merge'], description: '重复 design_id 策略；缺省 error' },
+      dry_run: { type: 'boolean', description: '只返回统计和预览，不写台账' },
+      additionalProperties: true,
+    },
+    op: 'ingest',
+    timeoutMs: 120_000,
   })))
 
   return () => disposers.forEach((d) => d())
