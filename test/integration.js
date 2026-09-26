@@ -203,7 +203,7 @@ await test('degraded checks expose controlled remediation codes and a degraded s
   }
 })
 
-await test('capabilities exposes the sixteen-tool manifest with dependency marking', async () => {
+await test('capabilities exposes the seventeen-tool manifest with dependency marking', async () => {
   assert.equal(typeof integration?.createIntegrationService, 'function')
   const dataRoot = mkdtempSync(join(tmpdir(), 'galatea-integration-caps-'))
   const prevHF = process.env.HF_HOME
