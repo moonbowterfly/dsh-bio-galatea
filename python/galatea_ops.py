@@ -28,6 +28,7 @@ op 一览（v0.1）：
   ingest          多源候选摄入与统一 JSONL 台账
   redesign        区域约束式 binder 序列重设计（MPNN）
   refold          binder 单体复折叠救援检查（ESMFold）
+  portfolio       约束优先的确定性候选组合选择（不读取实验标签）
 """
 import json
 import os
@@ -273,6 +274,15 @@ def op_refold(args):
     return run_refold(args, DATA_ROOT, default_out_dir)
 
 
+# ---------------------------------------------------------------------------
+# op: portfolio — constrained deterministic candidate selection
+# ---------------------------------------------------------------------------
+def op_portfolio(args):
+    sys.dont_write_bytecode = True
+    from portfolio_tools import run_portfolio
+    return run_portfolio(args)
+
+
 OPS = {
     "status": op_status,
     "setup": op_setup,
@@ -290,6 +300,7 @@ OPS = {
     "ingest": op_ingest,
     "redesign": op_redesign,
     "refold": op_refold,
+    "portfolio": op_portfolio,
 }
 
 

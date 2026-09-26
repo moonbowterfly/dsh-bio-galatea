@@ -35,7 +35,7 @@ globalThis.clearTimeout = (timer) => { cleared.push(timer) }
 
 try {
   plugin.apply(ctx)
-  assert.equal(toolRegistrations, 16)
+  assert.equal(toolRegistrations, 17)
   assert.equal(skillRegistrations, 1)
   assert.equal(routes.length, 0)
   assert.deepEqual(dynamicInjection?.deps, ['webServer'])
@@ -69,4 +69,4 @@ try {
   globalThis.clearTimeout = originalClearTimeout
 }
 
-console.log('✓ dynamic webServer injection leaves all 16 galatea tools active')
+console.log('✓ dynamic webServer injection leaves all 17 galatea tools active')

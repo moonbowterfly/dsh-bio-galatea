@@ -6,7 +6,7 @@ language: python
 
 # galatea-expert — 蛋白质结构预测与设计主指引
 
-> 插件：dsh-bio-galatea（G 系列蛋白质工具域）｜ 16 工具：`galatea_status / setup / mpnn / fold / interface / score / inspect / cluster / rank / rank_aggregate / loop / contact_consensus / contact_cluster / redesign / refold / ingest`
+> 插件：dsh-bio-galatea（G 系列蛋白质工具域）｜ 17 工具：`galatea_status / setup / mpnn / fold / interface / score / inspect / cluster / rank / rank_aggregate / loop / contact_consensus / contact_cluster / redesign / refold / ingest / portfolio`
 > 定位：**本机可承担**的蛋白质设计计算（序列设计、单链折叠、界面与序列分析、聚类）；
 > **不承担**重型 co-folding（AF2/AF3/Boltz 复合物预测——走外部服务，产物回本插件分析）。
 
@@ -35,6 +35,7 @@ language: python
 | 多个预测复合物要找稳定界面与 anchor | `galatea_contact_consensus` | `models` 或 `models_dir`+`glob`；汇总残基/pair 频率与 residue/edge Jaccard；链参数缺省时按角色统一不同模型的链 ID，并返回 `chain_label_mappings`；coverage <6 时不返回 anchors；仅作设计控制，不参与排序 |
 | 多候选要按结合表位/pose 去重与检查多样性 | `galatea_contact_cluster` | `artifacts` 或 `artifacts_dir` 输入 contact-consensus JSON；同 target 内按 target-side footprint Jaccard ≥0.70 单链接主聚类，再按频率向量 cosine ≥0.80 单链接次聚类；输出 nearest neighbors、HHI/N_eff；不同 target 不比较 |
 | 多个生成来源的候选要统一留账 | `galatea_ingest` | `structures`、`structs_dir`、`candidates_file`、`records` 四选一；每条候选必须有 `target_id`，身份键为 target + design；结构对象写入 SHA256 与显式 role；namespaced `raw_scores` 的 direction/version 放在 `.schema.json` sidecar；显式 `parent_id` 解析 lineage，缺失父本记 `DANGLING_PARENT` 并可在后续 append 解析；仅处理本地文件 |
+| 要按覆盖、配额和风险约束组成候选短名单 | `galatea_portfolio` | `candidates` + 可选 `config` + 必填 `out`；Stage 0 资格、Stage 1 每靶 coverage floor、Stage 2 全局竞争；默认按靶内 consensus percentile 排序；输出 selected/rejected/summary/manifest，不读实验标签、不接 loop |
 | 有 binder+target 结构，要按区域约束重设计 | `galatea_redesign` | `binder_chain` 与 `mode` 必填推荐；interface-refine hard-freeze ≤4 Å 接触，anchor-preserving 需接触频率（≥0.7 冻结），scaffold-rescue 固定接触与显式 anchor、允许 CORE 改动；三态 rSASA 区域 + 双 shell；`fixed_positions` / `design_positions` 覆盖 preset |
 | 想确认 binder 离开 target 后能否折回参考构象 | `galatea_refold` | `structure_path` + `binder_chain`；可覆盖 `sequence` / `reference_binder_path`；输出 RMSD、F2Å、pLDDT 与二级结构；F2Å 仅记录，现有阈值尚未校准 |
 

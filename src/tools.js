@@ -1,6 +1,6 @@
-// dsh-bio-galatea — 工具层（defineTool 注册，16 语义化工具，v0.1）
+// dsh-bio-galatea — 工具层（defineTool 注册，17 语义化工具，v0.1）
 // 全部执行走 python/galatea_ops.py（JSON stdin 协议）。
-// op 与工具对照（1:1）：status/setup/mpnn/fold/interface/score/inspect/cluster/loop/redesign/refold（同名）；rank.consensus→galatea_rank；rank.aggregate→galatea_rank_aggregate。
+// op 与工具对照（1:1）：status/setup/mpnn/fold/interface/score/inspect/cluster/loop/redesign/refold/ingest/portfolio（同名）；rank.consensus→galatea_rank；rank.aggregate→galatea_rank_aggregate。
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { isAbsolute } from 'node:path'
 import { callGalatea } from './python.js'
@@ -443,6 +443,31 @@ export function registerTools(ctx) {
       additionalProperties: true,
     },
     op: 'ingest',
+    timeoutMs: 120_000,
+  })))
+
+  // galatea_portfolio: deterministic, constraint-first portfolio selection
+  disposers.push(ctx.tools.register(galateaTool({
+    name: 'galatea_portfolio',
+    description:
+      '约束优先的确定性候选组合选择器：先做 Stage 0 资格过滤，再满足 Stage 1 靶点覆盖 floor，最后按靶内共识百分位进行 Stage 2 全局竞争。' +
+      '支持 backbone、lineage、pose/sequence/contact cluster、exact sequence、每靶上限与 HIGH_RISK 配额；缺失可选维度会告警并让该候选在对应维度免于限额。' +
+      '输入候选 CSV/JSONL/JSON、内联配置对象或 JSON 配置路径及输出目录，生成 selected/rejected/summary/manifest 四件套；dry_run 可只预览。' +
+      '工具不读取湿实验标签，不接 loop 消费，不访问网络。' +
+      '触发词：portfolio、提交组合、配额、约束选择、diversity、slots、min_targets、风险配额。',
+    parameters: {
+      candidates: { type: 'string', required: true, description: '候选 CSV、JSONL 或 JSON 数组文件绝对路径' },
+      config: {
+        oneOf: [
+          { type: 'object', additionalProperties: true },
+          { type: 'string' },
+        ],
+        description: '可选内联配置对象或 JSON 配置文件绝对路径；未知键告警后忽略',
+      },
+      out: { type: 'string', required: true, description: '四件套输出目录绝对路径' },
+      additionalProperties: true,
+    },
+    op: 'portfolio',
     timeoutMs: 120_000,
   })))
 

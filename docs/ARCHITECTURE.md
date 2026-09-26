@@ -24,7 +24,7 @@
 | 文件 | 职责 |
 |---|---|
 | `index.js` | 主模块：`inject=['tools','skills']`（仅必选）；`webServer` 走 apply 内动态注入（非 web 部署时工具照常注册） |
-| `tools.js` | 16 语义化工具（`defineTool`）；**parameters/schema 是 agent 可见能力的唯一真相** |
+| `tools.js` | 17 语义化工具（`defineTool`）；**parameters/schema 是 agent 可见能力的唯一真相** |
 | `capabilities.js` | `TOOLS_MANIFEST` 单源（工具清单 + cost_class/network/mutability 元数据），供 integration 与宿主消费 |
 | `integration.js` | hosted-domain 集成协议 v1：`/health`、`/v1/status`、`/v1/capabilities`（loopback-only 三层守卫） |
 | `python.js` | 解释器解析链 + `callGalatea`（JSON stdin 协议）+ `stampProvenance` |
@@ -34,7 +34,7 @@
 
 | 文件 | 职责 |
 |---|---|
-| `galatea_ops.py` | 协议分发器（16 op）；三流 UTF-8；`_sanitize_json`；异常契约（结构化业务错误 + stderr Traceback 头） |
+| `galatea_ops.py` | 协议分发器（17 op）；三流 UTF-8；`_sanitize_json`；异常契约（结构化业务错误 + stderr Traceback 头） |
 | `components.py` | 组件探测（status）+ 零手动自举（setup：env / mpnn / esmfold，幂等） |
 | `mpnn_design.py` | MPNN 包装：spawn vendor LigandMPNN `run.py` + 输出解析（seqs/*.fa） |
 | `redesign_tools.py` | binder 区域/接触/SASA 计算、preset mask 生成与 MPNN 重设计编排 |
@@ -46,6 +46,7 @@
 | `seq_analysis.py` | 序列理化打分（score）+ 聚类（cluster） |
 | `seqio_lite.py` | FASTA 读写（最小实现） |
 | `loop_tools.py` | 迭代战役记账与确定性计划：复用 rank 共识和序列聚类；不执行生成 |
+| `portfolio_tools.py` | 三阶段约束贪心组合选择、coverage/cap 统计及原子化四件套输出；不读取实验标签 |
 
 ## 2. 数据目录（全部在插件私有空间）
 
@@ -69,7 +70,7 @@
 
 选择标准 = `import torch` 成功（进程内缓存；`setup` 成功后自动失效重探）。
 
-## 4. 工具 / op 对照（16 工具 = 16 op）
+## 4. 工具 / op 对照（17 工具 = 17 op）
 
 | 工具 | op | capability | 说明 |
 |---|---|---|---|
@@ -89,6 +90,7 @@
 | `galatea_redesign` | redesign | design | 区域约束式 MPNN 重设计（contact/anchor/双 shell/CORE/BOUNDARY/SURFACE masks） |
 | `galatea_refold` | refold | qc | binder 单体复折叠救援检查（RMSD/F2Å/pLDDT/二级结构；阈值未校准） |
 | `galatea_ingest` | ingest | design | 摄入本地多源候选并写入统一 JSONL 台账；以 target_id + design_id 标识记录、结构带哈希与 role、分数 schema 写 sidecar、只解析显式 parent_id |
+| `galatea_portfolio` | portfolio | design | 资格过滤 → 靶点覆盖 floor → 共识百分位全局竞争；约束配置化并输出 selected/rejected/summary/manifest |
 
 ## 5. 集成协议（宿主消费，v1 只读）
 

@@ -221,10 +221,10 @@ await test('capabilities exposes the sixteen-tool manifest with dependency marki
     assert.equal(response.ok, true)
     assert.equal(response.value.plugin_id, 'dsh-bio-galatea')
     assert.equal(response.value.plugin_version, '0.1.0')
-    assert.equal(response.value.tool_count, 16)
-    assert.equal(response.value.tools.length, 16)
+    assert.equal(response.value.tool_count, 17)
+    assert.equal(response.value.tools.length, 17)
     const names = response.value.tools.map((tool) => tool.name)
-    for (const expected of ['galatea_status', 'galatea_setup', 'galatea_mpnn', 'galatea_fold', 'galatea_interface', 'galatea_score', 'galatea_inspect', 'galatea_cluster', 'galatea_rank', 'galatea_rank_aggregate', 'galatea_loop', 'galatea_contact_consensus', 'galatea_contact_cluster', 'galatea_redesign', 'galatea_refold', 'galatea_ingest']) {
+    for (const expected of ['galatea_status', 'galatea_setup', 'galatea_mpnn', 'galatea_fold', 'galatea_interface', 'galatea_score', 'galatea_inspect', 'galatea_cluster', 'galatea_rank', 'galatea_rank_aggregate', 'galatea_loop', 'galatea_contact_consensus', 'galatea_contact_cluster', 'galatea_redesign', 'galatea_refold', 'galatea_ingest', 'galatea_portfolio']) {
       assert.ok(names.includes(expected), `missing tool ${expected}`)
     }
     // 缺依赖工具被标为 unavailable 并列出缺失项（python.torch 缺失 → mpnn/fold 不可用）

@@ -85,6 +85,9 @@ export const TOOLS_MANIFEST = [
     cost_class: 'medium', network: 'none', mutability: 'writes_output', status: 'ready',
     requires: ['runtime.analysis'],
     summary: '本地多源候选摄入：统一结构、候选文件和内联记录到可追溯 JSONL 台账' },
+  { name: 'galatea_portfolio', capability: 'galatea.design.portfolio', category: 'design',
+    cost_class: 'medium', network: 'none', mutability: 'writes_output', status: 'ready',
+    summary: '约束优先的确定性候选组合选择：资格过滤、靶点覆盖 floor、全局竞争与四件套审计输出' },
 ]
 
 export const CONTRACT_VERSION = '1'

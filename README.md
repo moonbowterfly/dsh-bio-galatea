@@ -8,7 +8,7 @@
 ## 它解决什么问题
 
 蛋白质设计（binder / 酶 / 纳米抗体）的标准流程散布在十几个工具里：设计序列要 ProteinMPNN、
-验证折叠要 ESMFold、筛选结合要界面分析、选候选要聚类。本插件把它们收拢为 **16 个语义化工具**，
+验证折叠要 ESMFold、筛选结合要界面分析、选候选要聚类。本插件把它们收拢为 **17 个语义化工具**，
 让 dsh 里的 agent（及 genie 宿主）直接调用——并**明确标注本机边界**（co-folding 等重算力环节
 诚实指向外部服务，不伪装能力）。
 
@@ -27,11 +27,12 @@
    迭代控制： galatea_loop(action="log|next|status")  # 多轮台账与下一轮计划，不执行生成
    接触共识： galatea_contact_consensus             # 多模型界面频率、pair 和 anchor（不做排序）
    接触聚类： galatea_contact_cluster               # target footprint Jaccard + 频率向量 cosine 单链接
+   组合选择： galatea_portfolio                     # 覆盖 floor、全局配额与风险约束；输出可审计四件套
    区域重设计： galatea_redesign                     # 按界面/anchor/骨架区域约束 MPNN
    复折叠救援： galatea_refold                       # 离开 target 后检查 binder 单体折叠
 ```
 
-## 16 个工具一览
+## 17 个工具一览
 
 | 工具 | 用途 | 典型耗时 |
 |---|---|---|
@@ -51,6 +52,13 @@
 | `galatea_redesign` | 区域约束重设计（冻结接触界面/anchor，支持 CORE/BOUNDARY/SURFACE） | 分钟级 |
 | `galatea_refold` | ESMFold 单体复折叠；序列对齐 Cα RMSD、F2Å、pLDDT 与二级结构一致性 | CPU 分钟级 |
 | `galatea_ingest` | 摄入本地 PDB/CIF、CSV/JSON/JSONL 或内联候选，按冲突策略写入统一 JSONL 台账 | 秒-分钟级 |
+| `galatea_portfolio` | 按资格、靶点覆盖、多样性配额与风险上限确定性选择候选组合 | 秒-分钟级 |
+
+## 候选组合选择（`galatea_portfolio`）
+
+输入候选 CSV、JSONL 或 JSON 数组，至少包含 `design_id`、`target_id`，并提供 `consensus_percentile` 或 `consensus_score`。缺少百分位但有共识分时，工具按靶点计算 midrank 百分位；有 `sequence` 但没有 `sequence_group_id` 时，按 ingest 相同公式 `SHA1(target_id + "|" + sequence)` 派生。默认先排除 QC FAIL、同靶重复序列、缺必需字段和不可排序候选，再满足每靶覆盖 floor，最后让余下候选按靶内共识百分位、共识分和 design_id 竞争。
+
+默认 `total_slots=500`、`min_targets=5`、每 backbone 最多 2 个、HIGH_RISK 上限为总 slots 的 10%；自动 lineage cap 为 `max(2, ceil(0.05 × est_target_slots))`。这些参数都可通过内联 `config` 对象或 JSON 文件调整。缺少可选多样性字段时，工具告警并让对应候选在该维度不受 cap 限制。调用需指定 `out` 目录；正常运行输出 `portfolio_selected.csv`、`portfolio_rejected.csv`、`portfolio_summary.json` 和 `portfolio_manifest.json`。Manifest 记录输入、配置哈希及三份 payload 文件的哈希；它不对自身做自引用哈希。该工具不读取实验标签、不访问网络，也不接入 `galatea_loop`。
 
 ## 候选摄入台账（`galatea_ingest`）
 

@@ -1327,6 +1327,185 @@ print(json.dumps({'checks':checks}, ensure_ascii=False))
   rmSync(bridgeDir, { recursive: true, force: true })
 }
 
+// G6 portfolio v0: eligibility, coverage floors, diversity caps, output and determinism.
+console.log('G6 portfolio')
+{
+  const temp = mkdtempSync(join(tmpdir(), 'galatea-portfolio-smoke-'))
+  const defaultConfig = {
+    total_slots: 10, min_targets: 0, per_target_min: 0, per_target_max: null,
+    max_per_backbone: 0, max_per_lineage: 0, max_per_pose_cluster: 0,
+    max_per_sequence_cluster: 0, max_per_contact_cluster: 0,
+    high_risk_fraction_max: 1, exact_sequence_max_per_target: 0,
+  }
+  const csvCell = (value) => {
+    if (value === null || value === undefined) return ''
+    const text = String(value)
+    return /[",\r\n]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text
+  }
+  function writeCandidates(name, rows) {
+    const fields = [...new Set(rows.flatMap((row) => Object.keys(row)))]
+    const content = [fields.join(','), ...rows.map((row) => fields.map((field) => csvCell(row[field])).join(','))].join('\n') + '\n'
+    const path = join(temp, `${name}.csv`)
+    writeFileSync(path, content, 'utf8')
+    return path
+  }
+  function candidate(design_id, target_id, percentile, extra = {}) {
+    return {
+      design_id, target_id, consensus_percentile: percentile, consensus_score: percentile,
+      qc_status: 'PASS', sequence: `SEQ_${design_id}`, ...extra,
+    }
+  }
+  async function portfolio(name, rows, config = {}) {
+    const candidates = writeCandidates(name, rows)
+    const out = join(temp, `${name}-out`)
+    const result = await runOp('portfolio', {
+      candidates, config: { ...defaultConfig, ...config }, out,
+    })
+    return { ...result, out, candidates }
+  }
+  const readSelected = (out) => readFileSync(join(out, 'portfolio_selected.csv'), 'utf8')
+  const readRejected = (out) => readFileSync(join(out, 'portfolio_rejected.csv'), 'utf8')
+
+  try {
+    const dedup = await portfolio('dedup', [
+      candidate('dup-low', 'T1', 0.4, { sequence: 'SAME' }),
+      candidate('dup-best', 'T1', 0.9, { sequence: 'SAME' }),
+      candidate('other', 'T1', 0.7),
+    ], { total_slots: 2, exact_sequence_max_per_target: 1 })
+    check('portfolio: exact same-target sequence keeps rank-first candidate', dedup.json?.ok === true &&
+      readSelected(dedup.out).includes('dup-best') && !readSelected(dedup.out).includes('dup-low') &&
+      readRejected(dedup.out).includes('duplicate_sequence'))
+    check('portfolio: derived sequence_group_id matches ingest SHA1 formula',
+      readSelected(dedup.out).includes('sequence_group_id') &&
+      readSelected(dedup.out).includes(createHash('sha1').update('T1|SAME').digest('hex')))
+
+    const capCases = [
+      ['backbone', 'backbone_id', 'max_per_backbone'],
+      ['lineage', 'lineage_id', 'max_per_lineage'],
+      ['pose', 'pose_cluster_id', 'max_per_pose_cluster'],
+      ['sequence_cluster', 'sequence_cluster_id', 'max_per_sequence_cluster'],
+      ['contact', 'contact_cluster_id', 'max_per_contact_cluster'],
+    ]
+    for (const [label, field, configKey] of capCases) {
+      const capConfig = { total_slots: 3, [configKey]: 1 }
+      if (configKey === 'max_per_lineage') capConfig[configKey] = 1
+      const result = await portfolio(`cap-${label}`, [
+        candidate(`${label}-a`, 'T1', 0.9, { [field]: 'shared' }),
+        candidate(`${label}-b`, 'T1', 0.8, { [field]: 'shared' }),
+        candidate(`${label}-c`, 'T1', 0.7, { [field]: 'other' }),
+      ], capConfig)
+      const capName = label === 'pose' ? 'pose_cluster' : label === 'contact' ? 'contact_cluster' : label
+      check(`portfolio: ${label} cap skips a blocked candidate`, result.json?.ok === true &&
+        result.json?.result?.summary?.cap_skip_counts?.global_competition?.[capName] >= 1 &&
+        readRejected(result.out).includes(`cap_blocked:${capName}`))
+    }
+
+    const autoLineage = await portfolio('lineage-auto', Array.from({ length: 6 }, (_, index) =>
+      candidate(`lin-${index + 1}`, 'T1', 0.99 - index * 0.01, { lineage_id: 'L1' })),
+    { total_slots: 100, max_per_lineage: null })
+    check('portfolio: automatic lineage cap = max(2, ceil(5% × 100)) = 5',
+      autoLineage.json?.result?.summary?.config?.max_per_lineage === 5 &&
+      autoLineage.json?.result?.summary?.stage_stats?.global_competition?.selected === 5 &&
+      autoLineage.json?.result?.summary?.cap_skip_counts?.global_competition?.lineage === 1)
+
+    const risk = await portfolio('risk-cap', [
+      candidate('risk-a', 'T1', 0.99, { expression_risk: 'high_risk' }),
+      candidate('risk-b', 'T1', 0.98, { expression_risk: 'HIGH_RISK' }),
+      candidate('risk-c', 'T1', 0.97, { expression_risk: 'High_Risk' }),
+      candidate('risk-low', 'T1', 0.2, { expression_risk: 'LOW' }),
+    ], { total_slots: 10, high_risk_fraction_max: 0.2 })
+    check('portfolio: case-insensitive HIGH_RISK fraction cap applies',
+      risk.json?.result?.summary?.config?.derived?.max_high_risk === 2 &&
+      risk.json?.result?.summary?.coverage?.per_target?.T1 === 3 &&
+      risk.json?.result?.summary?.cap_skip_counts?.global_competition?.high_risk === 1)
+
+    const targetCap = await portfolio('target-cap', [
+      candidate('target-a', 'T1', 0.9), candidate('target-b', 'T1', 0.8), candidate('target-c', 'T1', 0.7),
+    ], { total_slots: 3, per_target_max: 1 })
+    check('portfolio: per_target_max blocks excess candidates and reports shortfall',
+      targetCap.json?.result?.summary?.coverage?.per_target?.T1 === 1 &&
+      targetCap.json?.result?.summary?.counts?.slots_shortfall === 2 &&
+      targetCap.json?.result?.summary?.cap_skip_counts?.global_competition?.per_target_max === 2)
+
+    const floor = await portfolio('floor-cap', [
+      candidate('a-top', 'A', 0.99, { backbone_id: 'shared' }),
+      candidate('a-next', 'A', 0.8, { backbone_id: 'A2' }),
+      candidate('b-top', 'B', 0.98, { backbone_id: 'shared' }),
+      candidate('b-next', 'B', 0.7, { backbone_id: 'B2' }),
+    ], { total_slots: 3, min_targets: 2, max_per_backbone: 1 })
+    check('portfolio: Stage 1 floor continues after backbone cap blocks first candidate',
+      floor.json?.result?.summary?.stage_stats?.coverage_floor?.selected === 2 &&
+      floor.json?.result?.summary?.cap_skip_counts?.coverage_floor?.backbone === 1 &&
+      floor.json?.result?.summary?.coverage?.per_target?.A === 2 &&
+      floor.json?.result?.summary?.coverage?.per_target?.B === 1)
+
+    const coverage = await portfolio('coverage', [
+      candidate('a1', 'A', 0.9), candidate('a2', 'A', 0.8),
+      candidate('b1', 'B', 0.89), candidate('b2', 'B', 0.79),
+      candidate('c1', 'C', 0.88), candidate('c2', 'C', 0.78),
+    ], { total_slots: 2, min_targets: 2 })
+    const impossible = await portfolio('coverage-impossible', [candidate('only-a', 'A', 0.9)], { min_targets: 2 })
+    check('portfolio: min_targets coverage floor selects two distinct targets',
+      coverage.json?.result?.summary?.coverage?.n_targets_selected === 2 && coverage.json?.result?.summary?.flags?.length === 0)
+    check('portfolio: min_targets above eligible targets returns structured ok:false', impossible.json?.ok === false &&
+      /exceeds eligible target count/.test(impossible.json?.error || ''))
+
+    const missingDimensions = await portfolio('missing-dimensions', [
+      candidate('known', 'T1', 0.9, {
+        backbone_id: 'B1', lineage_id: 'L1', pose_cluster_id: 'P1',
+        sequence_cluster_id: 'S1', contact_cluster_id: 'C1', expression_risk: 'LOW',
+      }),
+      candidate('unknown', 'T1', 0.8, { sequence: '' }),
+    ], {
+      total_slots: 2, max_per_backbone: 1, max_per_lineage: 1, max_per_pose_cluster: 1,
+      max_per_sequence_cluster: 1, max_per_contact_cluster: 1, exact_sequence_max_per_target: 1,
+      high_risk_fraction_max: 0.5,
+    })
+    const missingWarnings = missingDimensions.json?.result?.summary?.warnings?.join('\n') || ''
+    check('portfolio: missing optional dimensions warn and leave those candidates uncapped',
+      ['backbone_id', 'lineage_id', 'pose_cluster_id', 'sequence_cluster_id', 'contact_cluster_id',
+        'sequence_group_id', 'expression_risk'].every((field) => missingWarnings.includes(field)))
+
+    const midrank = await portfolio('midrank', [
+      candidate('z-tie', 'T1', null, { consensus_percentile: '', consensus_score: 0.9 }),
+      candidate('a-tie', 'T1', null, { consensus_percentile: '', consensus_score: 0.9 }),
+      candidate('low', 'T1', null, { consensus_percentile: '', consensus_score: 0.1 }),
+    ], { total_slots: 1 })
+    check('portfolio: score fallback computes target midranks and design_id tie-break',
+      midrank.json?.ok === true && readSelected(midrank.out).includes('a-tie') &&
+      Math.abs((midrank.json?.result?.summary?.counts?.selected ?? 0) - 1) === 0 &&
+      readSelected(midrank.out).includes('0.6666666666666666'))
+
+    const deterministic1 = await portfolio('deterministic-1', [
+      candidate('d1', 'T1', 0.9, { backbone_id: 'B1' }), candidate('d2', 'T1', 0.8, { backbone_id: 'B1' }),
+      candidate('d3', 'T1', 0.7, { backbone_id: 'B2' }),
+    ], { total_slots: 2, max_per_backbone: 1 })
+    const deterministic2 = await portfolio('deterministic-2', [
+      candidate('d1', 'T1', 0.9, { backbone_id: 'B1' }), candidate('d2', 'T1', 0.8, { backbone_id: 'B1' }),
+      candidate('d3', 'T1', 0.7, { backbone_id: 'B2' }),
+    ], { total_slots: 2, max_per_backbone: 1 })
+    const quartet = ['portfolio_selected.csv', 'portfolio_rejected.csv', 'portfolio_summary.json', 'portfolio_manifest.json']
+    check('portfolio: four output files are byte-identical across independent processes',
+      deterministic1.json?.ok === true && deterministic2.json?.ok === true && quartet.every((file) =>
+        readFileSync(join(deterministic1.out, file)).equals(readFileSync(join(deterministic2.out, file)))))
+
+    const badInputs = [
+      ['empty table', () => writeFileSync(join(temp, 'bad-empty.csv'), '', 'utf8')],
+      ['missing design_id column', () => writeFileSync(join(temp, 'bad-id-column.csv'), 'target_id,consensus_score\nT1,0.5\n', 'utf8')],
+      ['duplicate design_id', () => writeCandidates('bad-duplicate', [candidate('same', 'T1', 0.9), candidate('same', 'T2', 0.8)])],
+      ['all not_rankable', () => writeCandidates('bad-rankable', [candidate('nr1', 'T1', null, { consensus_percentile: '', consensus_score: '' })])],
+    ]
+    for (const [label, prepare] of badInputs) {
+      prepare()
+      const name = label === 'empty table' ? 'bad-empty' : label === 'missing design_id column' ? 'bad-id-column' : label === 'duplicate design_id' ? 'bad-duplicate' : 'bad-rankable'
+      const r = await runOp('portfolio', { candidates: join(temp, `${name}.csv`), out: join(temp, `${name}-out`), config: defaultConfig })
+      check(`portfolio: ${label} returns structured ok:false`, r.code === 0 && r.json?.ok === false && typeof r.json?.error === 'string')
+    }
+  } finally {
+    rmSync(temp, { recursive: true, force: true })
+  }
+}
+
 if (!HEAVY) {
   skip('mpnn: 真实序列设计', '默认跳过（--heavy 且 mpnn 组件就绪时运行）')
   skip('fold: 真实折叠', '默认跳过（--heavy 且 esmfold 就绪时运行）')

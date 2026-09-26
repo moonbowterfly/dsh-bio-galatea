@@ -11,7 +11,7 @@
 
 A standard protein-design pipeline (binders / enzymes / nanobodies) is scattered across a dozen
 tools: ProteinMPNN for sequences, ESMFold for fold validation, interface analysis for binding
-screening, clustering for candidate selection. This plugin gathers them into **16 semantic tools**
+screening, clustering for candidate selection. This plugin gathers them into **17 semantic tools**
 that agents in dsh (and the genie host) can call directly — with **explicit local boundaries**
 (heavy co-folding is honestly redirected to external services instead of pretending capability).
 
@@ -29,9 +29,10 @@ that agents in dsh (and the genie host) can call directly — with **explicit lo
    Diversity:     galatea_cluster               # identity clustering + representative set
    Contact consensus: galatea_contact_consensus # multi-model contact frequencies and anchors
    Contact clusters: galatea_contact_cluster    # target footprint Jaccard + frequency cosine, single-link
+   Portfolio:       galatea_portfolio            # coverage floors, global caps and auditable outputs
 ```
 
-## The 16 tools
+## The 17 tools
 
 | Tool | Purpose | Typical time |
 |---|---|---|
@@ -51,6 +52,13 @@ that agents in dsh (and the genie host) can call directly — with **explicit lo
 | `galatea_redesign` | Region-constrained binder redesign using contact, anchor, and rSASA regions | minutes |
 | `galatea_refold` | ESMFold monomer refold metrics including the Cα fraction within 2 Å (F2Å) | CPU minutes |
 | `galatea_ingest` | Ingest local PDB/CIF, CSV/JSON/JSONL, or inline candidates into a conflict-aware JSONL ledger | seconds–minutes |
+| `galatea_portfolio` | Deterministic selection under target coverage, diversity caps and risk limits | seconds–minutes |
+
+## Constraint-first portfolios (`galatea_portfolio`)
+
+Provide a candidate CSV, JSONL, or JSON array with `design_id`, `target_id`, and either `consensus_percentile` or `consensus_score`. Missing percentiles are computed as within-target midranks when consensus scores are available. When `sequence_group_id` is absent but `sequence` is present, the selector derives it with the same `SHA1(target_id + "|" + sequence)` formula as ingest. It then applies QC and required-field eligibility, exact-sequence deduplication, a per-target coverage floor, and global competition by within-target percentile, consensus score, and design ID.
+
+Defaults include 500 total slots, 5 minimum targets, a backbone cap of 2, and a 10% HIGH_RISK ceiling. The automatic lineage cap is `max(2, ceil(0.05 × estimated target slots))`. All limits can be changed through an inline `config` object or JSON config file. Missing optional dimensions generate warnings and leave candidates without that value unrestricted on the dimension. Set `out` to write `portfolio_selected.csv`, `portfolio_rejected.csv`, `portfolio_summary.json`, and `portfolio_manifest.json`. The manifest hashes the input, effective config, and three payload files; it does not self-hash. The selector does not read wet-lab labels, access the network, or feed `galatea_loop`.
 
 ## Candidate ledger (`galatea_ingest`)
 
