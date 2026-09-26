@@ -1,4 +1,4 @@
-// dsh-bio-galatea — 工具层（defineTool 注册，15 语义化工具，v0.1）
+// dsh-bio-galatea — 工具层（defineTool 注册，16 语义化工具，v0.1）
 // 全部执行走 python/galatea_ops.py（JSON stdin 协议）。
 // op 与工具对照（1:1）：status/setup/mpnn/fold/interface/score/inspect/cluster/loop/redesign/refold（同名）；rank.consensus→galatea_rank；rank.aggregate→galatea_rank_aggregate。
 import { defineTool } from '@deepseek-ai/dsh-tools'
@@ -315,6 +315,28 @@ export function registerTools(ctx) {
     },
     op: 'contact_consensus',
     timeoutMs: 300_000,
+  })))
+
+  // galatea_contact_cluster: target-side footprint 单链接触/pose 聚类
+  disposers.push(ctx.tools.register(galateaTool({
+    name: 'galatea_contact_cluster',
+    description:
+      '读取 contact_consensus JSON artifacts，按同 target 的 target-side residue footprint 计算 Jaccard 主层与频率向量 cosine 次层，并以单链接生成确定性 contact/pose 簇。' +
+      '输出每候选 nearest neighbor、target_contact_set、target_footprint_freq、binder_anchor_set，以及全局和 per-target 的 HHI/N_eff；跨 target 不比较。支持 dry_run；写文件使用原子替换。' +
+      '当前 legacy artifact 若未落盘 pair frequency，会按 artifact 中的模型路径与链映射以 4 Å 默认 cutoff 重算，并在候选 warnings 标记。' +
+      '触发词：聚类、pose、epitope、footprint、diversity、contact。',
+    parameters: {
+      artifacts: { type: 'array', items: { type: 'string' }, description: 'contact_consensus JSON 文件路径列表；与 artifacts_dir 二选一' },
+      artifacts_dir: { type: 'string', description: 'contact_consensus JSON 文件目录；缺省 glob 为 contact_consensus_*.json' },
+      glob: { type: 'array', items: { type: 'string' }, description: 'artifacts_dir 内文件模式列表；缺省 ["contact_consensus_*.json"]' },
+      jaccard_threshold: { type: 'number', minimum: 0, maximum: 1, description: 'target footprint Jaccard 单链接阈值；缺省 0.70' },
+      cosine_threshold: { type: 'number', minimum: 0, maximum: 1, description: 'target footprint frequency cosine 单链接阈值；缺省 0.80' },
+      out: { type: 'string', required: true, description: '聚类 JSON 输出文件绝对路径' },
+      dry_run: { type: 'boolean', description: '只返回汇总，不写文件' },
+      additionalProperties: true,
+    },
+    op: 'contact_cluster',
+    timeoutMs: 120_000,
   })))
 
   // galatea_redesign: 区域约束式 binder 重设计

@@ -1,5 +1,5 @@
 // dsh-bio-galatea — Cordis 插件主模块
-// 注入 tools（15 语义化工具：status/setup/mpnn/fold/interface/score/inspect/cluster/rank/rank_aggregate/loop/contact_consensus/redesign/refold/ingest）
+// 注入 tools（16 语义化工具：status/setup/mpnn/fold/interface/score/inspect/cluster/rank/rank_aggregate/loop/contact_consensus/contact_cluster/redesign/refold/ingest）
 // + skills（galatea-expert）。蛋白质结构预测与设计域（G 系列第四员）。
 import { registerTools } from './tools.js'
 import { registerSkills } from './skills.js'

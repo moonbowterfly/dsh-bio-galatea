@@ -8,7 +8,7 @@
 ## 它解决什么问题
 
 蛋白质设计（binder / 酶 / 纳米抗体）的标准流程散布在十几个工具里：设计序列要 ProteinMPNN、
-验证折叠要 ESMFold、筛选结合要界面分析、选候选要聚类。本插件把它们收拢为 **15 个语义化工具**，
+验证折叠要 ESMFold、筛选结合要界面分析、选候选要聚类。本插件把它们收拢为 **16 个语义化工具**，
 让 dsh 里的 agent（及 genie 宿主）直接调用——并**明确标注本机边界**（co-folding 等重算力环节
 诚实指向外部服务，不伪装能力）。
 
@@ -26,11 +26,12 @@
    多样性：   galatea_cluster                # 同一性聚类 + 代表序列
    迭代控制： galatea_loop(action="log|next|status")  # 多轮台账与下一轮计划，不执行生成
    接触共识： galatea_contact_consensus             # 多模型界面频率、pair 和 anchor（不做排序）
+   接触聚类： galatea_contact_cluster               # target footprint Jaccard + 频率向量 cosine 单链接
    区域重设计： galatea_redesign                     # 按界面/anchor/骨架区域约束 MPNN
    复折叠救援： galatea_refold                       # 离开 target 后检查 binder 单体折叠
 ```
 
-## 15 个工具一览
+## 16 个工具一览
 
 | 工具 | 用途 | 典型耗时 |
 |---|---|---|
@@ -46,6 +47,7 @@
 | `galatea_rank_aggregate` | 多批次排序结果聚合 → 统一排名 CSV | 秒级 |
 | `galatea_loop` | 多轮设计战役记账、父本选择、停止建议与下一轮计划（不执行生成） | 秒级 |
 | `galatea_contact_consensus` | 多模型界面残基/pair 频率、Jaccard 矩阵与 anchor（设计控制信号，不参与排序） | 秒-分钟级 |
+| `galatea_contact_cluster` | target-side footprint Jaccard / 频率向量 cosine 单链接聚类，输出 pose/contact 簇、最近邻与 HHI/N_eff | 秒级-分钟级 |
 | `galatea_redesign` | 区域约束重设计（冻结接触界面/anchor，支持 CORE/BOUNDARY/SURFACE） | 分钟级 |
 | `galatea_refold` | ESMFold 单体复折叠；序列对齐 Cα RMSD、F2Å、pLDDT 与二级结构一致性 | CPU 分钟级 |
 | `galatea_ingest` | 摄入本地 PDB/CIF、CSV/JSON/JSONL 或内联候选，按冲突策略写入统一 JSONL 台账 | 秒-分钟级 |

@@ -24,7 +24,7 @@
 | 文件 | 职责 |
 |---|---|
 | `index.js` | 主模块：`inject=['tools','skills']`（仅必选）；`webServer` 走 apply 内动态注入（非 web 部署时工具照常注册） |
-| `tools.js` | 15 语义化工具（`defineTool`）；**parameters/schema 是 agent 可见能力的唯一真相** |
+| `tools.js` | 16 语义化工具（`defineTool`）；**parameters/schema 是 agent 可见能力的唯一真相** |
 | `capabilities.js` | `TOOLS_MANIFEST` 单源（工具清单 + cost_class/network/mutability 元数据），供 integration 与宿主消费 |
 | `integration.js` | hosted-domain 集成协议 v1：`/health`、`/v1/status`、`/v1/capabilities`（loopback-only 三层守卫） |
 | `python.js` | 解释器解析链 + `callGalatea`（JSON stdin 协议）+ `stampProvenance` |
@@ -34,7 +34,7 @@
 
 | 文件 | 职责 |
 |---|---|
-| `galatea_ops.py` | 协议分发器（15 op）；三流 UTF-8；`_sanitize_json`；异常契约（结构化业务错误 + stderr Traceback 头） |
+| `galatea_ops.py` | 协议分发器（16 op）；三流 UTF-8；`_sanitize_json`；异常契约（结构化业务错误 + stderr Traceback 头） |
 | `components.py` | 组件探测（status）+ 零手动自举（setup：env / mpnn / esmfold，幂等） |
 | `mpnn_design.py` | MPNN 包装：spawn vendor LigandMPNN `run.py` + 输出解析（seqs/*.fa） |
 | `redesign_tools.py` | binder 区域/接触/SASA 计算、preset mask 生成与 MPNN 重设计编排 |
@@ -69,7 +69,7 @@
 
 选择标准 = `import torch` 成功（进程内缓存；`setup` 成功后自动失效重探）。
 
-## 4. 工具 / op 对照（15 工具 = 15 op）
+## 4. 工具 / op 对照（16 工具 = 16 op）
 
 | 工具 | op | capability | 说明 |
 |---|---|---|---|
@@ -85,6 +85,7 @@
 | `galatea_rank_aggregate` | rank.aggregate | screening | 多批次聚合 → 全局排名 CSV |
 | `galatea_loop` | loop | design | 多轮设计战役记账、父本筛选、停止建议与下一轮计划；不执行生成 |
 | `galatea_contact_consensus` | contact_consensus | design | 多模型接触频率与 Jaccard 矩阵、anchor；只作设计控制信号 |
+| `galatea_contact_cluster` | contact_cluster | design | target-side footprint Jaccard + 频率向量 cosine 单链接聚类；跨 target 不比较 |
 | `galatea_redesign` | redesign | design | 区域约束式 MPNN 重设计（contact/anchor/双 shell/CORE/BOUNDARY/SURFACE masks） |
 | `galatea_refold` | refold | qc | binder 单体复折叠救援检查（RMSD/F2Å/pLDDT/二级结构；阈值未校准） |
 | `galatea_ingest` | ingest | design | 摄入本地多源候选并写入统一 JSONL 台账；以 target_id + design_id 标识记录、结构带哈希与 role、分数 schema 写 sidecar、只解析显式 parent_id |

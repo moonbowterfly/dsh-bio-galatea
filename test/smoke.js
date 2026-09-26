@@ -6,7 +6,8 @@
 //
 // 解释器选择链（与 src/python.js 对齐）：GALATEA_PYTHON > 私有 venv > CONDA_PREFIX > 兜底
 import { spawn } from 'node:child_process'
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -112,6 +113,116 @@ console.log('L1 协议与逻辑')
 {
   const r = await runOp('cluster', { sequences: ['ACDEFGHIKL', 'ACDEFGHIKL'], threshold: 0.5 })
   check('cluster: 完全相同 → 1 簇', r.json?.result?.n_clusters === 1)
+}
+
+{
+  const temp = mkdtempSync(join(tmpdir(), 'galatea-contact-cluster-smoke-'))
+  const out = join(temp, 'clusters.json')
+  const t1 = join(temp, 'T1')
+  const artifactPaths = {}
+  function writeArtifact(targetDir, id, residues, targetId = undefined) {
+    const dir = join(temp, targetDir)
+    const path = join(dir, `contact_consensus_${id}_jaccard.json`)
+    const pair_frequency = Object.fromEntries(residues.flatMap(([label, frequency]) => [
+      [`B1|${label}`, frequency], [`B2|${label}`, frequency / 2],
+    ]))
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(path, JSON.stringify({
+      candidate_id: id, ...(targetId ? { target_id: targetId } : {}),
+      pair_frequency, anchor_residues: ['B42'],
+    }))
+    artifactPaths[id] = path
+  }
+  const labels = (start, end, prefix = 'A') => Array.from(
+    { length: end - start + 1 }, (_, index) => [`${prefix}${start + index}`, 1])
+  writeArtifact('T1', 'A', labels(1, 10))
+  writeArtifact('T1', 'B', [...labels(1, 1), ...Array.from({ length: 6 }, (_, index) => [`A${index + 2}`, 0.5])])
+  writeArtifact('T1', 'C', [...labels(1, 6), ['A11', 1]])
+  writeArtifact('T1', 'D', labels(1, 10))
+  writeArtifact('T1', 'E', labels(1, 10, 'X'))
+
+  try {
+    const args = { artifacts: Object.values(artifactPaths), out }
+    const first = await runOp('contact_cluster', args)
+    const firstBytes = readFileSync(out)
+    const output = JSON.parse(firstBytes.toString('utf8'))
+    const byId = Object.fromEntries(output.candidates.map((candidate) => [candidate.design_id, candidate]))
+    check('contact_cluster: 5 个合成 artifact，target Jaccard 精确值与跨 target 配对数',
+      first.json?.ok === true && output.summary.n_candidates === 5 &&
+      byId.A.nearest_contact_jaccard === 1.0 && byId.E.nearest_contact_jaccard === 0.0 &&
+      Math.abs(byId.B.nearest_contact_jaccard - 0.75) < 1e-12 &&
+      byId.B.target_footprint_freq.A1 === 1.0 && byId.B.target_footprint_freq.A2 === 0.5 &&
+      output.summary.n_within_target_pairs === 10 &&
+      output.summary.n_cross_target_pairs_compared === 0,
+      JSON.stringify({ result: first.json, summary: output.summary, candidates: byId }))
+    const partialPath = join(temp, 'partial-overlap.json')
+    const partial = await runOp('contact_cluster', {
+      artifacts: [artifactPaths.A, artifactPaths.C], out: partialPath,
+    })
+    const partialOutput = JSON.parse(readFileSync(partialPath, 'utf8'))
+    check('contact_cluster: 部分重叠 Jaccard 精确为 6/11',
+      partial.json?.ok === true && partialOutput.candidates.every((candidate) =>
+        Math.abs(candidate.nearest_contact_jaccard - 6 / 11) < 1e-12))
+    check('contact_cluster: 边界 cosine=0.80 与 Jaccard=0.70 均入簇',
+      Math.abs(byId.B.nearest_pose_cosine - Math.sqrt(0.7)) < 1e-12 &&
+      output.clusters.contact.some((cluster) => JSON.stringify(cluster.members) === JSON.stringify(['A', 'B', 'C', 'D'])) &&
+      output.clusters.pose.some((cluster) => JSON.stringify(cluster.members) === JSON.stringify(['A', 'B', 'C', 'D'])),
+      JSON.stringify({ cosine: byId.B.nearest_pose_cosine, clusters: output.clusters }))
+    check('contact_cluster: 单链接传递（A~B、B~C，A~C<0.70）与 nearest tie-break',
+      byId.E.nearest_neighbor_id === 'A' && byId.E.nearest_contact_jaccard === 0.0 &&
+      output.clusters.contact.some((cluster) => JSON.stringify(cluster.members) === JSON.stringify(['A', 'B', 'C', 'D'])) &&
+      output.clusters.contact.some((cluster) => JSON.stringify(cluster.members) === JSON.stringify(['E'])))
+    const boundaryPath = join(temp, 'boundary.json')
+    const boundary = await runOp('contact_cluster', {
+      artifacts: [artifactPaths.A, artifactPaths.B], out: boundaryPath,
+    })
+    const boundaryOutput = JSON.parse(readFileSync(boundaryPath, 'utf8'))
+    check('contact_cluster: 两候选恰好 Jaccard=0.70 / cosine=0.80 时边界入簇',
+      boundary.json?.ok === true && boundaryOutput.clusters.contact.length === 1 &&
+      boundaryOutput.clusters.pose.length === 1 &&
+      boundaryOutput.candidates.every((candidate) => candidate.nearest_contact_jaccard === 0.7 &&
+        Math.abs(candidate.nearest_pose_cosine - 0.8) < 1e-12),
+      JSON.stringify({ result: boundary.json, output: boundaryOutput }))
+
+    const acrossTargets = await runOp('contact_cluster', {
+      artifacts: [
+        (writeArtifact('TX', 'X', labels(1, 5), 'target-X'), artifactPaths.X),
+        (writeArtifact('TY', 'Y', labels(1, 5), 'target-Y'), artifactPaths.Y),
+      ], out: join(temp, 'cross-target.json'),
+    })
+    const cross = JSON.parse(readFileSync(join(temp, 'cross-target.json'), 'utf8'))
+    const digestX = createHash('sha1').update('X').digest('hex').slice(0, 12)
+    const digestY = createHash('sha1').update('Y').digest('hex').slice(0, 12)
+    check('contact_cluster: 跨 target 各自单点簇、nearest=null、单点簇 ID 稳定',
+      acrossTargets.json?.ok === true && cross.summary.n_within_target_pairs === 0 &&
+      cross.candidates.every((candidate) => candidate.nearest_neighbor_id === null &&
+        candidate.nearest_contact_jaccard === null && candidate.nearest_pose_cosine === null) &&
+      cross.clusters.contact.some((cluster) => cluster.cluster_id === `cc_${digestX}`) &&
+      cross.clusters.contact.some((cluster) => cluster.cluster_id === `cc_${digestY}`),
+      JSON.stringify({ result: acrossTargets.json, output: cross, expected: [digestX, digestY] }))
+
+    const again = await runOp('contact_cluster', args)
+    check('contact_cluster: 同输入双跑输出文件逐字节一致',
+      again.json?.ok === true && firstBytes.equals(readFileSync(out)))
+
+    const dryPath = join(temp, 'dry-run.json')
+    const dryRun = await runOp('contact_cluster', { ...args, out: dryPath, dry_run: true })
+    check('contact_cluster: dry_run 返回 summary 且不写输出文件',
+      dryRun.json?.ok === true && dryRun.json?.result?.dry_run === true &&
+      !!dryRun.json?.result?.summary && !existsSync(dryPath))
+
+    const zero = await runOp('contact_cluster', { artifacts: [], out })
+    const one = await runOp('contact_cluster', { artifacts: [artifactPaths.A], out })
+    const badJson = join(t1, 'contact_consensus_bad_jaccard.json')
+    writeFileSync(badJson, '{ bad json')
+    const malformed = await runOp('contact_cluster', {
+      artifacts: [artifactPaths.A, badJson], out: join(temp, 'bad.json'),
+    })
+    check('contact_cluster: 0/1 artifact 与坏 JSON 均为结构化 ok:false',
+      zero.json?.ok === false && one.json?.ok === false && malformed.json?.ok === false)
+  } finally {
+    rmSync(temp, { recursive: true, force: true })
+  }
 }
 
 {
@@ -340,6 +451,7 @@ from redesign_tools import (_core_mutation_fraction, _structural_region, build_r
                             calculate_regions, run_redesign, write_fixed_residues)
 from refold_tools import classify_secondary_structure, compare_structures, run_refold
 from contact_tools import run_contact_consensus
+from cluster_tools import run_contact_cluster
 import mpnn_design
 
 fixture = ${JSON.stringify(FIXTURE)}
@@ -696,6 +808,21 @@ with tempfile.TemporaryDirectory(prefix='galatea-contact-consensus-smoke-') as t
     assert len(matrices['residue_jaccard']) == len(matrices['edge_jaccard']) == 3
 
     full_contact = run_contact(contact_paths, 'ten-model')['result']
+    legacy_cluster_a = run_contact(contact_paths, 'legacy-cluster-a')['result']['artifact_path']
+    legacy_cluster_b = run_contact(contact_paths, 'legacy-cluster-b')['result']['artifact_path']
+    legacy_cluster_out = os.path.join(temp, 'legacy-clusters.json')
+    legacy_cluster = run_contact_cluster({
+        'artifacts': [legacy_cluster_a, legacy_cluster_b], 'out': legacy_cluster_out,
+    })
+    with open(legacy_cluster_out, 'r', encoding='utf-8') as handle:
+        legacy_cluster_json = json.load(handle)
+    assert legacy_cluster['ok'] is True and legacy_cluster_json['summary']['n_candidates'] == 2
+    assert legacy_cluster_json['clusters']['contact'][0]['members'] == ['legacy-cluster-a', 'legacy-cluster-b']
+    assert all('LEGACY_ARTIFACT_REANALYZED_MODELS' in row['warnings']
+               for row in legacy_cluster_json['candidates'])
+    assert all('LEGACY_ARTIFACT_CUTOFF_ASSUMED_4A' in row['warnings']
+               for row in legacy_cluster_json['candidates'])
+    assert all(row['binder_anchor_set'] == ['B1', 'B2'] for row in legacy_cluster_json['candidates'])
     warn = run_contact(contact_paths[:6] + [contact_paths[8]], 'seven-model')['result']
     insufficient = run_contact(contact_paths[:4] + [contact_paths[8]], 'five-model')['result']
     assert full_contact['coverage'] == {'expected_models': 10, 'valid_models': 10}
@@ -749,6 +876,12 @@ with tempfile.TemporaryDirectory(prefix='galatea-contact-consensus-smoke-') as t
             mixed_result['binder_residues'].get('C1', {}).get('contact_freq') == 1.0 and
             mixed_result['chain_label_mappings']['mixed_01.pdb']['binder_chain'] == {
                 'source': 'A', 'canonical': 'C'},
+        'legacy_artifact_clustered': legacy_cluster['ok'] is True and
+            legacy_cluster_json['summary']['n_candidates'] == 2 and
+            all('LEGACY_ARTIFACT_REANALYZED_MODELS' in row['warnings']
+                for row in legacy_cluster_json['candidates']) and
+            all('LEGACY_ARTIFACT_CUTOFF_ASSUMED_4A' in row['warnings']
+                for row in legacy_cluster_json['candidates']),
         'artifact_written': os.path.isfile(matrix_path),
     }
 import fold_esm
@@ -860,6 +993,8 @@ print(json.dumps({
     sample.contact_summary.artifact_written === true)
   check('contact_consensus: auto chain-role normalization preserves cross-model residue identities',
     sample?.contact_summary?.auto_mixed_labels_consistent === true)
+  check('contact_cluster: legacy contact-consensus artifacts reanalyze model paths and preserve anchors',
+    sample?.contact_summary?.legacy_artifact_clustered === true)
   console.log('  mini-complex refold alignment sample:', JSON.stringify({
     metrics: sample?.same_metrics?.metrics, verdict: sample?.same_metrics?.verdict,
   }))

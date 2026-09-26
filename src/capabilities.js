@@ -68,6 +68,10 @@ export const TOOLS_MANIFEST = [
     cost_class: 'medium', network: 'none', mutability: 'writes_output', status: 'ready',
     requires: ['runtime.analysis'],
     summary: '多模型重原子界面接触一致性：残基/残基对频率、Jaccard 矩阵与 anchor；只作设计控制信号，不参与候选排序' },
+  { name: 'galatea_contact_cluster', capability: 'galatea.design.contact-cluster', category: 'design',
+    cost_class: 'medium', network: 'none', mutability: 'writes_output', status: 'ready',
+    requires: ['runtime.analysis'],
+    summary: 'target-side footprint 单链接触/pose 聚类：同 target 的 Jaccard 主层 + 频率向量 cosine 次层，输出确定性簇与 HHI/N_eff' },
 
   { name: 'galatea_redesign', capability: 'galatea.design.redesign', category: 'design',
     cost_class: 'heavy', network: 'none', mutability: 'writes_output', status: 'ready',
