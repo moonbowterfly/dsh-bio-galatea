@@ -60,6 +60,9 @@ export const TOOLS_MANIFEST = [
   { name: 'galatea_rank_aggregate', capability: 'galatea.screen.rank-aggregate', category: 'screening',
     cost_class: 'light', network: 'none', mutability: 'writes_output', status: 'ready',
     summary: '多批次排序结果聚合：合并为统一全局排名 CSV（跨批同一确定性排序规则 + 重复 id 检查）' },
+  { name: 'galatea_loop', capability: 'galatea.design.iterate', category: 'design',
+    cost_class: 'light', network: 'none', mutability: 'writes_output', status: 'ready',
+    summary: '多轮设计战役控制：登记轮次、评估父本与谱系、输出确定性 predict-and-redesign 计划（不执行生成）' },
 ]
 
 export const CONTRACT_VERSION = '1'

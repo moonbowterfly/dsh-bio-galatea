@@ -23,7 +23,7 @@
 | 文件 | 职责 |
 |---|---|
 | `index.js` | 主模块：`inject=['tools','skills']`（仅必选）；`webServer` 走 apply 内动态注入（非 web 部署时工具照常注册） |
-| `tools.js` | 10 语义化工具（`defineTool`）；**parameters/schema 是 agent 可见能力的唯一真相** |
+| `tools.js` | 11 语义化工具（`defineTool`）；**parameters/schema 是 agent 可见能力的唯一真相** |
 | `capabilities.js` | `TOOLS_MANIFEST` 单源（工具清单 + cost_class/network/mutability 元数据），供 integration 与宿主消费 |
 | `integration.js` | hosted-domain 集成协议 v1：`/health`、`/v1/status`、`/v1/capabilities`（loopback-only 三层守卫） |
 | `python.js` | 解释器解析链 + `callGalatea`（JSON stdin 协议）+ `stampProvenance` |
@@ -33,13 +33,14 @@
 
 | 文件 | 职责 |
 |---|---|
-| `galatea_ops.py` | 协议分发器（8 op）；三流 UTF-8；`_sanitize_json`；异常契约（恒 ok:true + stderr Traceback 头） |
+| `galatea_ops.py` | 协议分发器（11 op）；三流 UTF-8；`_sanitize_json`；异常契约（恒 ok:true + stderr Traceback 头） |
 | `components.py` | 组件探测（status）+ 零手动自举（setup：env / mpnn / esmfold，幂等） |
 | `mpnn_design.py` | MPNN 包装：spawn vendor LigandMPNN `run.py` + 输出解析（seqs/*.fa） |
 | `fold_esm.py` + `_fold_worker.py` | ESMFold 编排 + 推理 worker（模型加载隔离在一次性子进程） |
 | `struct_analysis.py` | 界面分析（interface）+ 结构 QC（inspect）；biopython |
 | `seq_analysis.py` | 序列理化打分（score）+ 聚类（cluster） |
 | `seqio_lite.py` | FASTA 读写（最小实现） |
+| `loop_tools.py` | 迭代战役记账与确定性计划：复用 rank 共识和序列聚类；不执行生成 |
 
 ## 2. 数据目录（全部在插件私有空间）
 
@@ -63,7 +64,7 @@
 
 选择标准 = `import torch` 成功（进程内缓存；`setup` 成功后自动失效重探）。
 
-## 4. 工具 / op 对照（10 工具 = 10 op）
+## 4. 工具 / op 对照（11 工具 = 11 op）
 
 | 工具 | op | capability | 说明 |
 |---|---|---|---|
@@ -77,6 +78,7 @@
 | `galatea_cluster` | cluster | analysis | 候选聚类 |
 | `galatea_rank` | rank.consensus | screening | 候选共识排序（等权共识 + 分档 strong≥0.73） |
 | `galatea_rank_aggregate` | rank.aggregate | screening | 多批次聚合 → 全局排名 CSV |
+| `galatea_loop` | loop | design | 多轮设计战役记账、父本筛选、停止建议与下一轮计划；不执行生成 |
 
 ## 5. 集成协议（宿主消费，v1 只读）
 

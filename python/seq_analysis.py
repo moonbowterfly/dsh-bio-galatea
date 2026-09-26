@@ -102,6 +102,19 @@ def score_sequences(sequences):
     }
 
 
+def _sequence_identity_cleaned(a, b):
+    """Identity for sequences already normalized by ``_clean_seq``."""
+    length = min(len(a), len(b))
+    if length == 0:
+        return 0.0
+    return sum(1 for index in range(length) if a[index] == b[index]) / length
+
+
+def sequence_identity(sequence_a, sequence_b):
+    """Return the same shorter-prefix identity used by ``cluster_sequences``."""
+    return _sequence_identity_cleaned(_clean_seq(sequence_a), _clean_seq(sequence_b))
+
+
 def cluster_sequences(sequences, threshold=0.8):
     """序列同一性聚类（贪心代表集）。
 
@@ -122,19 +135,11 @@ def cluster_sequences(sequences, threshold=0.8):
     clusters = []      # [ [member indices], ... ]
     assign = [-1] * n
 
-    def _identity(i, j):
-        a, b = seqs[i], seqs[j]
-        L = min(len(a), len(b))
-        if L == 0:
-            return 0.0
-        same = sum(1 for k in range(L) if a[k] == b[k])
-        return same / L
-
     for i in range(n):
         best_ci = -1
         best_id = -1.0
         for ci, ri in enumerate(reps):
-            ident = _identity(i, ri)
+            ident = _sequence_identity_cleaned(seqs[i], seqs[ri])
             if ident >= threshold and ident > best_id:
                 best_id = ident
                 best_ci = ci

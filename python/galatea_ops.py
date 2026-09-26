@@ -22,6 +22,7 @@ op 一览（v0.1）：
    cluster    候选聚类（同一性矩阵 + 贪心代表集）
    rank.consensus  多预测器等权共识排序
    rank.aggregate  多批次排序结果聚合并输出 CSV
+   loop            多轮设计战役记账、评估与下一轮计划（不执行生成）
 """
 import json
 import os
@@ -211,6 +212,16 @@ def op_rank_aggregate(args):
         return {"ok": False, "error": str(exc)}
 
 
+# ---------------------------------------------------------------------------
+# op: loop — 多轮设计迭代控制（记账与计划；不执行生成）
+# ---------------------------------------------------------------------------
+def op_loop(args):
+    # 该 op 和复用模块只读写用户显式指定的 campaign_dir；避免生成 .pyc。
+    sys.dont_write_bytecode = True
+    from loop_tools import run_loop
+    return run_loop(args)
+
+
 OPS = {
     "status": op_status,
     "setup": op_setup,
@@ -222,6 +233,7 @@ OPS = {
     "cluster": op_cluster,
     "rank.consensus": op_rank_consensus,
     "rank.aggregate": op_rank_aggregate,
+    "loop": op_loop,
 }
 
 

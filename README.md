@@ -8,7 +8,7 @@
 ## 它解决什么问题
 
 蛋白质设计（binder / 酶 / 纳米抗体）的标准流程散布在十几个工具里：设计序列要 ProteinMPNN、
-验证折叠要 ESMFold、筛选结合要界面分析、选候选要聚类。本插件把它们收拢为 **10 个语义化工具**，
+验证折叠要 ESMFold、筛选结合要界面分析、选候选要聚类。本插件把它们收拢为 **11 个语义化工具**，
 让 dsh 里的 agent（及 genie 宿主）直接调用——并**明确标注本机边界**（co-folding 等重算力环节
 诚实指向外部服务，不伪装能力）。
 
@@ -24,9 +24,10 @@
    理化过滤： galatea_score                  # pI/净电荷/疏水矩/聚集代理
    结构检查： galatea_inspect                # clash / pLDDT 分布
    多样性：   galatea_cluster                # 同一性聚类 + 代表序列
+   迭代控制： galatea_loop(action="log|next|status")  # 多轮台账与下一轮计划，不执行生成
 ```
 
-## 10 个工具一览
+## 11 个工具一览
 
 | 工具 | 用途 | 典型耗时 |
 |---|---|---|
@@ -40,6 +41,17 @@
 | `galatea_cluster` | 候选聚类（多样性代表集） | 秒-分钟级 |
 | `galatea_rank` | 候选共识排序（多预测器等权共识 + 分档） | 秒级 |
 | `galatea_rank_aggregate` | 多批次排序结果聚合 → 统一排名 CSV | 秒级 |
+| `galatea_loop` | 多轮设计战役记账、父本选择、停止建议与下一轮计划（不执行生成） | 秒级 |
+
+## 设计迭代（`galatea_loop`）
+
+`galatea_loop` 是 predict-and-redesign 循环的决策与记账层；它只读写调用者指定的战役目录，不运行 MPNN、云端生成或预测。`action="log"` 接收非负 `round_id` 与候选列表，候选可带预测器分数字典或 `ipsae_min_*` 扁平分数，以及 `parent_id`、`sequence`、`structure_path`、`qc_status` 和 `flags`。结果分别写入 `campaign.json`、`rounds/round_<id>.json`；重复轮次必须显式设置 `overwrite=true`。
+
+`action="next"` 对最近一轮按 `rank_tools` 的 skip-missing 等权均值计算共识，再将轮内共识转成并列值使用平均秩的降序百分位（最高为 1.0）。不确定性是可用预测器分数的总体标准差；少于两个分数时记为 0 并返回警告。资格门为 `qc_status != FAIL` 且百分位不低于 `min_consensus_pctl`。合格者按约 60/20/20 分入 exploitation（百分位 ≥0.80，单谱系最多一个）、uncertainty（百分位 ≥0.50 且不确定性达到本轮最近秩 Q75）和 diversity（剩余合格者贪心 max-min；先优先不同序列簇，再比较较短序列前缀的同一性距离）。序列簇由 `seq_analysis.cluster_sequences` 计算。父本目标数为 `min(max_parents, max(min_parents, cloud_budget_round // 6))`，合格候选不足时按实际数量输出原因。
+
+每个父本的本地计划总数缺省 32，拆为 `fixed_interface_solublempnn` / `soluble_mpnn` / T=0.1 / 16 条、`anchor_fixed_solublempnn` / `soluble_mpnn` / T=0.12 / 8 条、`explore_mpnn` / `protein_mpnn` / T=0.25 / 8 条；云端每父本缺省计划 6 条。计划会注明缺少结构路径时界面冻结如何降级，以及缺少 contact-consensus 时 anchor 如何降级。谱系沿 `parent_id` 回溯；任一谱系连续两轮最佳百分位提升 <0.05 且没有新簇时列入 `stop_lineages`，不会再被选为父本。推广规则是子代百分位比父本至少高 0.05，或子代百分位 ≥0.90 且形成新簇。停止建议检查连续两轮推广率 <5%、连续两轮最佳百分位提升低于 `improvement_epsilon`、累计 ≥100 个高置信合格候选（百分位 ≥0.80）或达到 `max_rounds`。这些计划是确定性的占位建议，生成仍由 `galatea_mpnn` 或外部云平台完成。
+
+常用默认参数：`cloud_budget_round=96`、`max_parents=16`、`min_parents=8`、`per_parent_local=32`、`cloud_per_parent=6`、`min_consensus_pctl=0.50`、`promotion_delta=0.05`、`max_rounds=6`、`improvement_epsilon=0.02`、`diversity_threshold=0.8`。`action="status"` 汇总各轮最佳/中位共识、候选与谱系数量、推广率、最新计划路径和继续/停止/补数据建议。
 
 ## 硬件边界（诚实声明）
 
@@ -65,7 +77,7 @@ MIT（本插件自身）。第三方组件许可见上「依赖与致谢」。
 ## English
 
 **dsh-bio-galatea** is the protein structure prediction & design member of the G-series dsh plugins.
-Eight semantic tools — sequence design (ProteinMPNN/SolubleMPNN/LigandMPNN), single-chain folding
+Eleven semantic tools — sequence design (ProteinMPNN/SolubleMPNN/LigandMPNN), single-chain folding
 (ESMFold, CPU/GPU adaptive), complex-interface analysis, sequence scoring, structure QC, and
 diversity clustering — with zero-manual-setup (private venv auto-bootstrap) and honest capability
 boundaries (heavy co-folding stays with external services). Designed to coexist with

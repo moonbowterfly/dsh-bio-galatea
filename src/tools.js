@@ -1,6 +1,6 @@
-// dsh-bio-galatea — 工具层（defineTool 注册，10 语义化工具，v0.1）
+// dsh-bio-galatea — 工具层（defineTool 注册，11 语义化工具，v0.1）
 // 全部执行走 python/galatea_ops.py（JSON stdin 协议）。
-// op 与工具对照（1:1）：status/setup/mpnn/fold/interface/score/inspect/cluster（同名）；rank.consensus→galatea_rank；rank.aggregate→galatea_rank_aggregate。
+// op 与工具对照（1:1）：status/setup/mpnn/fold/interface/score/inspect/cluster/loop（同名）；rank.consensus→galatea_rank；rank.aggregate→galatea_rank_aggregate。
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { isAbsolute } from 'node:path'
 import { callGalatea } from './python.js'
@@ -236,6 +236,63 @@ export function registerTools(ctx) {
     },
     op: 'rank.aggregate',
     timeoutMs: 300_000,
+  })))
+
+  // ---------------------------------------------------------------------
+  // galatea_loop — 设计战役迭代控制（log / next / status；不执行生成）
+  // ---------------------------------------------------------------------
+  disposers.push(ctx.tools.register(galateaTool({
+    name: 'galatea_loop',
+    description:
+      '蛋白质设计战役迭代控制与轮次台账：log 登记候选结果，next 按历史共识、QC、谱系和序列簇确定性地产出下一轮计划，status 汇总进展与停止建议。' +
+      '它只记账和规划，不执行 MPNN、云端生成或预测。next 计划包括 exploitation/uncertainty/diversity 父本池、本地操作配额与云端预测占位。' +
+      '触发词：迭代控制、下一轮怎么设计、轮次台账、设计循环、iteration、predict-and-redesign。',
+    parameters: {
+      action: {
+        type: 'string', required: true, enum: ['log', 'next', 'status'],
+        description: 'log=登记一轮 / next=生成下一轮确定性计划 / status=查看战役摘要',
+      },
+      campaign_dir: { type: 'string', required: true, description: '战役目录绝对路径；campaign.json 与 rounds/、plans/ 写入此目录' },
+      round: {
+        type: 'object', description: 'action=log 必填的轮次数据', additionalProperties: true,
+        properties: {
+          round_id: { type: 'integer', required: true, minimum: 0, description: '非负轮次编号' },
+          candidates: {
+            type: 'array', required: true, description: '候选结果列表',
+            items: {
+              type: 'object', additionalProperties: true,
+              properties: {
+                candidate_id: { type: 'string', required: true },
+                scores: { type: 'object', additionalProperties: true, description: '预测器到分数的映射；也接受 ipsae_min_* 扁平分数字段' },
+                parent_id: { type: 'string' }, sequence: { type: 'string' },
+                structure_path: { type: 'string' },
+                qc_status: { type: 'string', enum: ['PASS', 'WARN', 'FAIL'] },
+                flags: { type: 'object', additionalProperties: true },
+              },
+            },
+          },
+          notes: { description: '本轮说明（可选 JSON 值）' },
+        },
+      },
+      overwrite: { type: 'boolean', description: 'log 重复 round_id 时显式覆盖；缺省 false' },
+      params: {
+        type: 'object', additionalProperties: true, description: 'action=next 的可选策略参数',
+        properties: {
+          cloud_budget_round: { type: 'integer', description: '每轮云端预测预算（默认 96）' },
+          max_parents: { type: 'integer', description: '父本上限（默认 16）' },
+          min_parents: { type: 'integer', description: '父本下限（默认 8）' },
+          per_parent_local: { type: 'integer', description: '每父本本地序列预算（默认 32）' },
+          cloud_per_parent: { type: 'integer', description: '每父本云端预测数（默认 6）' },
+          min_consensus_pctl: { type: 'number', description: '最低共识百分位（默认 0.50）' },
+          promotion_delta: { type: 'number', description: '推广所需百分位提升（默认 0.05）' },
+          max_rounds: { type: 'integer', description: '停止建议的最大轮数（默认 6）' },
+          improvement_epsilon: { type: 'number', description: '最佳百分位停滞阈值（默认 0.02）' },
+          diversity_threshold: { type: 'number', description: '序列簇同一性阈值（默认 0.8）' },
+        },
+      },
+    },
+    op: 'loop',
+    timeoutMs: 120_000,
   })))
 
   return () => disposers.forEach((d) => d())

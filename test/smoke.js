@@ -6,7 +6,7 @@
 //
 // 解释器选择链（与 src/python.js 对齐）：GALATEA_PYTHON > 私有 venv > CONDA_PREFIX > 兜底
 import { spawn } from 'node:child_process'
-import { existsSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -46,7 +46,7 @@ function skip(name, reason) {
 
 function runOp(op, args, timeoutMs = 180000) {
   return new Promise((resolve) => {
-    const cp = spawn(PY, ['-I', join(PYDIR, 'galatea_ops.py')], { cwd: PYDIR, windowsHide: true })
+    const cp = spawn(PY, ['-B', '-I', join(PYDIR, 'galatea_ops.py')], { cwd: PYDIR, windowsHide: true })
     let out = ''
     let err = ''
     cp.stdout.on('data', (d) => { out += d })
@@ -126,6 +126,107 @@ console.log('L1 协议与逻辑')
     res?.ranking?.length === 4 && existsSync(outCsv), `n=${res?.ranking?.length}`)
   check('rank.aggregate: 跨批首位（x1=0.9）', res?.ranking?.[0]?.candidate_id === 'x1')
   try { rmSync(outCsv, { force: true }) } catch {}
+}
+
+{
+  const campaignDir = mkdtempSync(join(tmpdir(), 'galatea-loop-smoke-'))
+  const emptyCampaignDir = mkdtempSync(join(tmpdir(), 'galatea-loop-empty-'))
+  const sequenceBase = 'ACDEFGHIKLMNPQRSTVWY'.repeat(3)
+  function loopCandidates(roundIndex) {
+    const candidates = Array.from({ length: 18 }, (_, index) => {
+      const center = 0.40 + index * 0.025 + roundIndex * 0.006
+      const spread = index % 3 === 0 ? 0.12 : 0.01
+      const sequence = sequenceBase.split('')
+      for (let mutation = 0; mutation < index * 7; mutation++) {
+        sequence[(mutation * 7 + index) % sequence.length] = 'ACDEFGHIKLMNPQRSTVWY'[(index + mutation) % 20]
+      }
+      return {
+        candidate_id: `${roundIndex ? 'y' : 'x'}${index}`,
+        ...(roundIndex ? { parent_id: `x${index}` } : {}),
+        scores: { p1: center + spread, p2: center - spread },
+        sequence: sequence.join(''),
+        qc_status: index % 2 ? 'PASS' : 'WARN',
+      }
+    })
+    candidates.push({
+      candidate_id: `fail_${roundIndex}`,
+      ...(roundIndex ? { parent_id: 'x0' } : {}),
+      scores: { p1: 0.999, p2: 0.999 },
+      sequence: sequenceBase,
+      qc_status: 'FAIL',
+    })
+    return candidates
+  }
+
+  try {
+    const firstLog = await runOp('loop', {
+      action: 'log', campaign_dir: campaignDir,
+      round: { round_id: 0, candidates: loopCandidates(0), notes: 'synthetic round zero' },
+    })
+    const secondLog = await runOp('loop', {
+      action: 'log', campaign_dir: campaignDir,
+      round: { round_id: 1, candidates: loopCandidates(1), notes: 'synthetic round one' },
+    })
+    check('loop.log: 两轮登记并建立 rounds 索引', firstLog.json?.ok === true &&
+      secondLog.json?.ok === true && secondLog.json?.rounds_total === 2)
+
+    const duplicate = await runOp('loop', {
+      action: 'log', campaign_dir: campaignDir,
+      round: { round_id: 1, candidates: loopCandidates(1) },
+    })
+    check('loop.log: 重复 round_id 明确报错', duplicate.json?.ok === false &&
+      /already exists/.test(duplicate.json?.error || ''))
+
+    const nextArgs = { action: 'next', campaign_dir: campaignDir }
+    const next = await runOp('loop', nextArgs)
+    const plan = next.json?.round_plan
+    const parents = plan?.parents || []
+    const localCounts = parents[0]?.operators?.map((operator) => operator.n) || []
+    check('loop.next: 父本目标落在 [min_parents,max_parents]',
+      parents.length >= 8 && parents.length <= 16, `n=${parents.length}`)
+    check('loop.next: 本地与云端配额总和正确',
+      parents.every((parent) => parent.n_local === 32 && parent.n_cloud === 6 &&
+        parent.operators.reduce((sum, operator) => sum + operator.n, 0) === 32) &&
+      plan?.budget?.local_sequences === parents.length * 32 &&
+      plan?.budget?.cloud_predictions === parents.length * 6,
+      JSON.stringify(plan?.budget))
+    check('loop.next: FAIL 候选被资格门挡在所有父本池外',
+      plan?.eligibility?.excluded_qc_fail === 1 && parents.every((parent) => !parent.candidate_id.startsWith('fail_')))
+    check('loop.next: 默认本地操作配额为 16/8/8',
+      JSON.stringify(localCounts) === JSON.stringify([16, 8, 8]), JSON.stringify(localCounts))
+    console.log('  synthetic campaign sample:', JSON.stringify({
+      round: plan?.round,
+      n_parents: parents.length,
+      first_parent: parents[0] && {
+        candidate_id: parents[0].candidate_id,
+        role: parents[0].role,
+        n_local: parents[0].n_local,
+        n_cloud: parents[0].n_cloud,
+      },
+      budget: plan?.budget,
+    }))
+
+    const nextAgain = await runOp('loop', nextArgs)
+    check('loop.next: 同输入双跑输出深度相等',
+      nextAgain.json?.ok === true && JSON.stringify(next.json) === JSON.stringify(nextAgain.json))
+
+    const status = await runOp('loop', { action: 'status', campaign_dir: campaignDir })
+    check('loop.status: 汇总两轮、谱系、推广统计和最新计划路径',
+      status.json?.ok === true && status.json?.status?.rounds === 2 &&
+      status.json?.status?.n_lineages > 0 &&
+      Array.isArray(status.json?.status?.promoted_rate_per_round) &&
+      status.json?.status?.latest_plan_path === next.json?.plan_path)
+
+    writeFileSync(join(emptyCampaignDir, 'campaign.json'), JSON.stringify({
+      schema_version: 1, campaign_id: 'empty', rounds: [], operator_stats: {},
+    }))
+    const emptyNext = await runOp('loop', { action: 'next', campaign_dir: emptyCampaignDir })
+    check('loop.next: 空战役明确报错', emptyNext.json?.ok === false &&
+      /no logged rounds/.test(emptyNext.json?.error || ''))
+  } finally {
+    rmSync(campaignDir, { recursive: true, force: true })
+    rmSync(emptyCampaignDir, { recursive: true, force: true })
+  }
 }
 
 {
