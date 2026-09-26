@@ -1,6 +1,6 @@
-// dsh-bio-galatea — 工具层（defineTool 注册，11 语义化工具，v0.1）
+// dsh-bio-galatea — 工具层（defineTool 注册，13 语义化工具，v0.1）
 // 全部执行走 python/galatea_ops.py（JSON stdin 协议）。
-// op 与工具对照（1:1）：status/setup/mpnn/fold/interface/score/inspect/cluster/loop（同名）；rank.consensus→galatea_rank；rank.aggregate→galatea_rank_aggregate。
+// op 与工具对照（1:1）：status/setup/mpnn/fold/interface/score/inspect/cluster/loop/redesign/refold（同名）；rank.consensus→galatea_rank；rank.aggregate→galatea_rank_aggregate。
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { isAbsolute } from 'node:path'
 import { callGalatea } from './python.js'
@@ -293,6 +293,58 @@ export function registerTools(ctx) {
     },
     op: 'loop',
     timeoutMs: 120_000,
+  })))
+
+  // galatea_redesign: 区域约束式 binder 重设计
+  disposers.push(ctx.tools.register(galateaTool({
+    name: 'galatea_redesign',
+    description:
+      '按结构区域约束重设计 binder 序列：识别 interface、anchor、shell、core、surface，按 preset 和显式残基覆盖生成 fixed/redesigned mask，再通过 LigandMPNN 采样。' +
+      '支持 interface-refine、anchor-preserving、scaffold-rescue、full-explore；缺 contact frequencies 时 anchor-preserving 会降级并标注。' +
+      '触发词：区域约束重设计、redesign、固定界面、界面保留重设计、表面重设计、anchor 保留、冻结残基。',
+    parameters: {
+      structure_path: { type: 'string', required: true, description: '复合物 PDB/CIF 结构文件绝对路径' },
+      binder_chain: { type: 'string', required: true, description: '待重设计的 binder 链 ID' },
+      target_chain: { type: 'string', description: '可选 target 链 ID，多个链用逗号分隔；缺省时除 binder 外均作为 target' },
+      mode: { type: 'string', enum: ['interface-refine', 'anchor-preserving', 'scaffold-rescue', 'full-explore'], description: '重设计 preset；缺省 interface-refine' },
+      contact_frequencies: { type: 'object', additionalProperties: { type: 'number' }, description: '可选残基接触频率映射，如 {"A42":0.9}' },
+      contact_frequencies_path: { type: 'string', description: '或接触频率 JSON 文件绝对路径；与 contact_frequencies 二选一' },
+      fixed_positions: { type: 'array', items: { type: 'string' }, description: '显式冻结残基，如 ["A12","A15"]；优先于 preset' },
+      design_positions: { type: 'array', items: { type: 'string' }, description: '显式设计残基，如 ["B3"]；优先于 preset' },
+      design_interface: { type: 'boolean', description: '显式设置 interface 区域是否设计' },
+      design_shell: { type: 'boolean', description: '显式设置 shell 区域是否设计' },
+      design_surface: { type: 'boolean', description: '显式设置 surface 区域是否设计' },
+      design_core: { type: 'boolean', description: '显式设置 core 区域是否设计' },
+      model: { type: 'string', enum: ['soluble_mpnn', 'protein_mpnn'], description: 'MPNN 模型，缺省 soluble_mpnn' },
+      n_sequences: { type: 'integer', minimum: 1, description: '生成候选数，缺省 16' },
+      batch_size: { type: 'integer', minimum: 1, description: 'MPNN 批大小，缺省 1' },
+      temperature: { type: 'number', exclusiveMinimum: 0, description: '采样温度；缺省按 preset 为 0.10、0.12 或 0.25' },
+      seed: { type: 'integer', description: '固定随机种子，缺省 0' },
+      out_dir: { type: 'string', description: '输出目录绝对路径；缺省 ~/.dsh/dsh-bio-galatea/out/redesign_<时间戳>' },
+      additionalProperties: true,
+    },
+    op: 'redesign',
+    timeoutMs: 600_000,
+  })))
+
+  // galatea_refold: binder 单体复折叠救援检查
+  disposers.push(ctx.tools.register(galateaTool({
+    name: 'galatea_refold',
+    description:
+      '检查 binder 离开 target 后能否折回参考构象：从复合物提取 binder 序列，调用 ESMFold 单链复折叠，再按序列对齐比较 Cα RMSD、pLDDT、二级结构一致性和偏差最大的残基。' +
+      'ESMFold 不可用或内存不足时明确失败；结果阈值标记为未校准，仅供排序参考。' +
+      '触发词：复折叠、单体结构检查、离开 target 还折得回吗、refold、monomer RMSD、折叠一致性。',
+    parameters: {
+      structure_path: { type: 'string', required: true, description: 'binder+target 复合物 PDB/CIF 文件绝对路径' },
+      binder_chain: { type: 'string', required: true, description: 'binder 链 ID' },
+      sequence: { type: 'string', description: '可选 binder 序列；缺省从复合物结构提取' },
+      reference_binder_path: { type: 'string', description: '可选参考构象 PDB/CIF 文件，覆盖复合物中的 binder 构象' },
+      out_dir: { type: 'string', description: '输出目录绝对路径；缺省 ~/.dsh/dsh-bio-galatea/out/refold_<时间戳>' },
+      keep_pdb: { type: 'boolean', description: '是否保留 ESMFold 单体结构，缺省 true' },
+      additionalProperties: true,
+    },
+    op: 'refold',
+    timeoutMs: 1_800_000,
   })))
 
   return () => disposers.forEach((d) => d())

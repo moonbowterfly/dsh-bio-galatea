@@ -63,6 +63,15 @@ export const TOOLS_MANIFEST = [
   { name: 'galatea_loop', capability: 'galatea.design.iterate', category: 'design',
     cost_class: 'light', network: 'none', mutability: 'writes_output', status: 'ready',
     summary: '多轮设计战役控制：登记轮次、评估父本与谱系、输出确定性 predict-and-redesign 计划（不执行生成）' },
+
+  { name: 'galatea_redesign', capability: 'galatea.design.redesign', category: 'design',
+    cost_class: 'heavy', network: 'none', mutability: 'writes_output', status: 'ready',
+    requires: ['python.torch', 'runtime.mpnn'],
+    summary: '区域约束式 binder 重设计：按 interface、anchor、shell、core、surface 计算固定与可设计残基，再用 MPNN 生成候选' },
+  { name: 'galatea_refold', capability: 'galatea.qc.refold', category: 'qc',
+    cost_class: 'heavy', network: 'none', mutability: 'writes_output', status: 'ready',
+    requires: ['python.torch', 'runtime.esmfold'],
+    summary: 'binder 单体复折叠救援检查：ESMFold 折叠后与参考构象做序列对齐 Cα RMSD、pLDDT 与二级结构一致性评估' },
 ]
 
 export const CONTRACT_VERSION = '1'

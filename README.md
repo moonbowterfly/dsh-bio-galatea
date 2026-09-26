@@ -8,7 +8,7 @@
 ## 它解决什么问题
 
 蛋白质设计（binder / 酶 / 纳米抗体）的标准流程散布在十几个工具里：设计序列要 ProteinMPNN、
-验证折叠要 ESMFold、筛选结合要界面分析、选候选要聚类。本插件把它们收拢为 **11 个语义化工具**，
+验证折叠要 ESMFold、筛选结合要界面分析、选候选要聚类。本插件把它们收拢为 **13 个语义化工具**，
 让 dsh 里的 agent（及 genie 宿主）直接调用——并**明确标注本机边界**（co-folding 等重算力环节
 诚实指向外部服务，不伪装能力）。
 
@@ -25,9 +25,11 @@
    结构检查： galatea_inspect                # clash / pLDDT 分布
    多样性：   galatea_cluster                # 同一性聚类 + 代表序列
    迭代控制： galatea_loop(action="log|next|status")  # 多轮台账与下一轮计划，不执行生成
+   区域重设计： galatea_redesign                     # 按界面/anchor/骨架区域约束 MPNN
+   复折叠救援： galatea_refold                       # 离开 target 后检查 binder 单体折叠
 ```
 
-## 11 个工具一览
+## 13 个工具一览
 
 | 工具 | 用途 | 典型耗时 |
 |---|---|---|
@@ -42,6 +44,14 @@
 | `galatea_rank` | 候选共识排序（多预测器等权共识 + 分档） | 秒级 |
 | `galatea_rank_aggregate` | 多批次排序结果聚合 → 统一排名 CSV | 秒级 |
 | `galatea_loop` | 多轮设计战役记账、父本选择、停止建议与下一轮计划（不执行生成） | 秒级 |
+| `galatea_redesign` | 区域约束重设计（冻结界面/anchor/核心，采样指定 binder 位点） | 分钟级 |
+| `galatea_refold` | ESMFold 单体复折叠；序列对齐 Cα RMSD、pLDDT 与二级结构一致性 | CPU 分钟级 |
+
+## 区域重设计与单体复折叠
+
+`galatea_redesign` 接收 binder+target 复合物和 binder 链，按 4 Å 重原子接触计算 interface、按 8 Å 计算 shell，并以复合物中的 per-residue SASA 将 binder 划分为 core（<20 Å²）和 surface（≥20 Å²）。`interface-refine` 冻结界面，`anchor-preserving` 冻结频率≥0.7 的 anchor（缺频率时标记降级），`scaffold-rescue` 冻结 interface∪core，`full-explore` 设计全部位点。显式 `fixed_positions` / `design_positions` 覆盖 preset；结果写入 FASTA、JSON 元数据和 LigandMPNN 可读的固定残基清单。
+
+`galatea_refold` 从复合物提取 binder 序列，用现有 ESMFold 流程进行单链预测，再按序列对齐比较参考和预测结构。输出的 RMSD、pLDDT 与 phi/psi 三态二级结构一致性阈值尚未校准，只适合候选排序；需经 `binder_eval` 校准后才能作为筛选条件。ESMFold 不可用或内存不足时会明确失败。
 
 ## 设计迭代（`galatea_loop`）
 
@@ -77,9 +87,9 @@ MIT（本插件自身）。第三方组件许可见上「依赖与致谢」。
 ## English
 
 **dsh-bio-galatea** is the protein structure prediction & design member of the G-series dsh plugins.
-Eleven semantic tools — sequence design (ProteinMPNN/SolubleMPNN/LigandMPNN), single-chain folding
-(ESMFold, CPU/GPU adaptive), complex-interface analysis, sequence scoring, structure QC, and
-diversity clustering — with zero-manual-setup (private venv auto-bootstrap) and honest capability
+Thirteen semantic tools cover sequence design (ProteinMPNN/SolubleMPNN/LigandMPNN), region-constrained
+redesign, single-chain folding and refolding rescue, complex-interface analysis, sequence scoring,
+structure QC, and diversity clustering — with zero-manual-setup (private venv auto-bootstrap) and honest capability
 boundaries (heavy co-folding stays with external services). Designed to coexist with
 dsh-bio-genie (`bio_*` tools) in the same dsh instance.
 

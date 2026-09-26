@@ -6,7 +6,7 @@ language: python
 
 # galatea-expert — 蛋白质结构预测与设计主指引
 
-> 插件：dsh-bio-galatea（G 系列蛋白质工具域）｜ 11 工具：`galatea_status / setup / mpnn / fold / interface / score / inspect / cluster / rank / rank_aggregate / loop`
+> 插件：dsh-bio-galatea（G 系列蛋白质工具域）｜ 13 工具：`galatea_status / setup / mpnn / fold / interface / score / inspect / cluster / rank / rank_aggregate / loop / redesign / refold`
 > 定位：**本机可承担**的蛋白质设计计算（序列设计、单链折叠、界面与序列分析、聚类）；
 > **不承担**重型 co-folding（AF2/AF3/Boltz 复合物预测——走外部服务，产物回本插件分析）。
 
@@ -32,6 +32,8 @@ language: python
 | 多预测器分数 → 共识挑高分（排序） | `galatea_rank` | 输入候选表（JSON 文本或 CSV 路径；分数列前缀缺省 `ipsae_min_`）；输出共识分 + 档位（strong≥0.73 / medium≥0.65 / weak≥0.2）+ 排名；数据口径：共识 top10-20% 命中富集约 2.3x |
 | 多批结果合并统一排名 | `galatea_rank_aggregate` | `batches`（前序结果 / 候选数组 / CSV 路径混合）→ 全局重排 + `output_csv` 落盘（必填） |
 | 已有多轮候选，规划下一轮 | `galatea_loop` | `action=log/next/status`；登记候选分数与 parent_id，按资格门、谱系、模型不确定性和序列簇生成下一轮计划；只记账和规划，不执行生成 |
+| 有 binder+target 结构，要按区域约束重设计 | `galatea_redesign` | `binder_chain` 与 `mode` 必填推荐；interface-refine 冻结界面，anchor-preserving 需接触频率（≥0.7 冻结），scaffold-rescue 冻结 interface∪core，full-explore 广泛采样；`fixed_positions` / `design_positions` 覆盖 preset |
+| 想确认 binder 离开 target 后能否折回参考构象 | `galatea_refold` | `structure_path` + `binder_chain`；可覆盖 `sequence` / `reference_binder_path`；ESMFold 重路径，RMSD/pLDDT/二级结构阈值尚未校准 |
 
 ## 三、典型工作流
 
@@ -57,6 +59,12 @@ FASTA 进 → `galatea_score`（过滤）→ `galatea_cluster`（去冗余）→
 `galatea_loop` 管理多轮父本筛选与计划，不会调用 MPNN 或云平台。先用 `action="log"` 登记每一轮的候选分数、QC 状态、序列和子代的 `parent_id`；每轮结果要保留可追溯的 `candidate_id`。然后用 `action="next"` 读取最近一轮，按共识百分位与 QC 资格门选择 exploitation、uncertainty、diversity 父本，并把本地 16/8/8 操作配额、云端预测占位、谱系停止与战役停止建议写入 `plans/round_<n>_plan.json`。根据计划手动运行 `galatea_mpnn` 和已选云端服务，整理结果后再 `log` 下一轮。`action="status"` 随时查看战役摘要。重复登记同一 round_id 会报错；确需替换时显式传 `overwrite=true`。
 
 父本资格是 `qc_status != FAIL` 且轮内共识百分位达到 `min_consensus_pctl`。缺少多个预测器时 uncertainty 会回退为 0 并在计划中提醒；没有结构或 contact-consensus 输入时，计划会标记界面冻结或 anchor 策略降级。停止建议应与实验目标一起判读；`galatea_loop` 不会自动执行任何生成。
+
+### E. 区域约束重设计与复折叠救援
+
+对已有复合物 binder 进行保守重设计时，用 `galatea_redesign` 输入复合物与 binder 链。它以 4 Å 重原子邻近定义 interface，以 8 Å 定义其外侧 shell，再用 per-residue SASA（20 Å²）拆分 core/surface。选 `interface-refine` 保留界面、`anchor-preserving` 保留高频接触 anchor、`scaffold-rescue` 保留界面与核心，或 `full-explore` 扩大探索；先核对返回的 regions/fixed mask，再查看 FASTA 与元数据。anchor 频率缺失会明确降级为 interface-refine。固定/设计位置可显式覆盖 preset。
+
+对一个或多个设计序列评估脱靶后的单体折叠时，运行 `galatea_refold`。它复用本地 ESMFold，按序列对齐参考结构，输出 Cα RMSD、pLDDT 分位数、phi/psi 三态二级结构一致性及偏差最大的 10 个残基。该 verdict 尚未校准，只供排序参考；通过 `binder_eval` 校准之前不得作为生产筛选阈值。ESMFold 权重不可用或内存不足时结果会明确失败，不会返回假成功。
 
 ## 四、硬件边界与纪律（本机 4GB GPU / CPU 场景）
 

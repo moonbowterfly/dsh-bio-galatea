@@ -64,7 +64,7 @@ def _parse_fa_headers(fasta_path):
 
 def design_sequences(pdb, out_dir, chains=None, fixed_residues=None, num_seqs=16,
                      batch_size=1, temperature=0.1, model="protein_mpnn", seed=0,
-                     data_root=None):
+                     data_root=None, redesigned_residues=None, disable_bytecode=False):
     """序列设计主入口（供 op_mpnn 调用）。返回结构化结果 dict。"""
     data_root = data_root or os.path.join(os.path.expanduser("~"), ".dsh", "dsh-bio-galatea")
     if model not in MODEL_SPECS:
@@ -104,11 +104,18 @@ def design_sequences(pdb, out_dir, chains=None, fixed_residues=None, num_seqs=16
     if fixed_residues:
         items = fixed_residues if isinstance(fixed_residues, str) else " ".join(fixed_residues)
         cmd += ["--fixed_residues", items]
+    if redesigned_residues:
+        items = redesigned_residues if isinstance(redesigned_residues, str) else " ".join(redesigned_residues)
+        cmd += ["--redesigned_residues", items]
 
     try:
+        run_env = None
+        if disable_bytecode:
+            run_env = os.environ.copy()
+            run_env["PYTHONDONTWRITEBYTECODE"] = "1"
         proc = subprocess.run(
             cmd, capture_output=True, text=True, encoding="utf-8", errors="replace",
-            cwd=vendor_dir, timeout=540,
+            cwd=vendor_dir, timeout=540, env=run_env,
         )
     except subprocess.TimeoutExpired:
         return {"ok": False, "error": "MPNN 运行超时（>540s）——可减少 num_seqs 或稍后重试",
@@ -175,3 +182,24 @@ def design_sequences(pdb, out_dir, chains=None, fixed_residues=None, num_seqs=16
                 "seq_recovery=与原生序列在可设计位置的同一性；温度越高多样性越大。"
                 "designs 已按 overall_confidence 降序；backbones/ 下为对应设计骨架 PDB。",
     }
+
+
+def design_sequences_with_masks(pdb, out_dir, chains, fixed_residues,
+                               redesigned_residues, num_seqs=16, batch_size=1,
+                               temperature=0.1, model="protein_mpnn", seed=0,
+                               data_root=None):
+    """按显式固定/可设计位点采样；仍复用 design_sequences 的 LigandMPNN 链路。"""
+    return design_sequences(
+        pdb=pdb,
+        out_dir=out_dir,
+        chains=chains,
+        fixed_residues=fixed_residues,
+        redesigned_residues=redesigned_residues,
+        num_seqs=num_seqs,
+        batch_size=batch_size,
+        temperature=temperature,
+        model=model,
+        seed=seed,
+        data_root=data_root,
+        disable_bytecode=True,
+    )

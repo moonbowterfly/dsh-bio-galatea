@@ -22,7 +22,9 @@ op 一览（v0.1）：
    cluster    候选聚类（同一性矩阵 + 贪心代表集）
    rank.consensus  多预测器等权共识排序
    rank.aggregate  多批次排序结果聚合并输出 CSV
-   loop            多轮设计战役记账、评估与下一轮计划（不执行生成）
+  loop            多轮设计战役记账、评估与下一轮计划（不执行生成）
+  redesign        区域约束式 binder 序列重设计（MPNN）
+  refold          binder 单体复折叠救援检查（ESMFold）
 """
 import json
 import os
@@ -222,6 +224,24 @@ def op_loop(args):
     return run_loop(args)
 
 
+# ---------------------------------------------------------------------------
+# op: redesign — 区域约束式 binder 重设计
+# ---------------------------------------------------------------------------
+def op_redesign(args):
+    sys.dont_write_bytecode = True
+    from redesign_tools import run_redesign
+    return run_redesign(args, DATA_ROOT, default_out_dir)
+
+
+# ---------------------------------------------------------------------------
+# op: refold — binder 单体复折叠救援检查
+# ---------------------------------------------------------------------------
+def op_refold(args):
+    sys.dont_write_bytecode = True
+    from refold_tools import run_refold
+    return run_refold(args, DATA_ROOT, default_out_dir)
+
+
 OPS = {
     "status": op_status,
     "setup": op_setup,
@@ -234,6 +254,8 @@ OPS = {
     "rank.consensus": op_rank_consensus,
     "rank.aggregate": op_rank_aggregate,
     "loop": op_loop,
+    "redesign": op_redesign,
+    "refold": op_refold,
 }
 
 
