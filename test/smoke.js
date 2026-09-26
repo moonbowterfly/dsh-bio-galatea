@@ -226,6 +226,68 @@ console.log('L1 协议与逻辑')
 }
 
 {
+  // contact_cluster: 跨进程确定性回归（PYTHONHASHSEED）——
+  // cosine 求和若按 set 迭代顺序累加，会随 Python 逐进程哈希随机化产生 ULP 级差异，
+  // 使 nearest_pose_cosine 跨运行不可复现。此处用两个固定种子各跑一次，要求逐字节一致。
+  const temp = mkdtempSync(join(tmpdir(), 'galatea-contact-cluster-seed-'))
+  function seedRun(seed, outPath) {
+    return new Promise((resolve) => {
+      const cp = spawn(PY, ['-B', join(PYDIR, 'galatea_ops.py')], {
+        cwd: PYDIR, windowsHide: true, env: { ...process.env, PYTHONHASHSEED: seed },
+      })
+      let out = ''
+      let err = ''
+      cp.stdout.on('data', (d) => { out += d })
+      cp.stderr.on('data', (d) => { err += d })
+      const timer = setTimeout(() => { try { cp.kill() } catch {} }, 120000)
+      cp.on('close', (code) => {
+        clearTimeout(timer)
+        let json = null
+        try { json = JSON.parse(out.trim().split('\n').pop()) } catch {}
+        resolve({ code, out, err, json })
+      })
+      cp.stdin.write(JSON.stringify({
+        op: 'contact_cluster',
+        args: { artifacts: [join(temp, 'seed-a.json'), join(temp, 'seed-b.json')], out: outPath },
+      }))
+      cp.stdin.end()
+    })
+  }
+  try {
+    // 60 个非精确二进制小数频率 + 混合量级极小项 → 求和顺序敏感
+    const labels = Array.from({ length: 60 }, (_, i) => `A${i + 1}`)
+    const pair1 = {}
+    const pair2 = {}
+    labels.forEach((label, i) => {
+      pair1[`B1|${label}`] = ((i * 37) % 97 + 1) / 97
+      pair1[`B2|${label}`] = (((i * 53) % 89 + 1) / 89) / 3
+      pair2[`B1|${label}`] = ((i * 71) % 83 + 1) / 83
+      pair2[`B2|${label}`] = (((i * 29) % 79 + 1) / 79) / 7
+    })
+    Array.from({ length: 5 }, (_, i) => `Z${i + 1}`).forEach((label, i) => {
+      pair1[`B1|${label}`] = 10 ** -(i + 6)
+      pair2[`B1|${label}`] = ((i * 13) % 17 + 1) / 17
+    })
+    writeFileSync(join(temp, 'seed-a.json'), JSON.stringify({
+      candidate_id: 'c1', target_id: 'T1', pair_frequency: pair1, anchor_residues: ['B42'] }))
+    writeFileSync(join(temp, 'seed-b.json'), JSON.stringify({
+      candidate_id: 'c2', target_id: 'T1', pair_frequency: pair2, anchor_residues: ['B42'] }))
+    const r1 = await seedRun('1', join(temp, 'out-s1.json'))
+    const r2 = await seedRun('2', join(temp, 'out-s2.json'))
+    const ok = r1.code === 0 && r2.code === 0 && r1.json?.ok === true && r2.json?.ok === true
+    const bytes1 = ok ? readFileSync(join(temp, 'out-s1.json')) : Buffer.alloc(0)
+    const bytes2 = ok ? readFileSync(join(temp, 'out-s2.json')) : Buffer.alloc(0)
+    check('contact_cluster: 输出与 PYTHONHASHSEED 无关（双 seed 逐字节一致；cosine 求和规范化）',
+      ok && bytes1.length > 0 && bytes1.equals(bytes2),
+      JSON.stringify({ code1: r1.code, code2: r2.code,
+        sha1: createHash('sha256').update(bytes1).digest('hex').slice(0, 16),
+        sha2: createHash('sha256').update(bytes2).digest('hex').slice(0, 16) }))
+  } finally {
+    rmSync(temp, { recursive: true, force: true })
+  }
+}
+
+{
   const r = await runOp('rank.consensus', {
     candidates: JSON.stringify([
       { candidate_id: 'c1', ipsae_min_p1: 0.9, ipsae_min_p2: 0.8 },

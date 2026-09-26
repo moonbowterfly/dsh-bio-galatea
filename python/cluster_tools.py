@@ -249,10 +249,13 @@ def _jaccard(left, right):
 
 
 def _cosine(left, right):
-    labels = set(left) | set(right)
+    # 求和顺序必须规范化：set 迭代顺序随 Python 逐进程哈希随机化变化，
+    # 而浮点加法不满足结合律——按 set 顺序累加会让 cosine（及输出中的
+    # nearest_pose_cosine）在不同进程间产生 ULP 级差异、破坏跨运行可复现性。
+    labels = sorted(set(left) | set(right))
     dot = sum(left.get(label, 0.0) * right.get(label, 0.0) for label in labels)
-    left_norm = math.sqrt(sum(value * value for value in left.values()))
-    right_norm = math.sqrt(sum(value * value for value in right.values()))
+    left_norm = math.sqrt(sum(left.get(label, 0.0) ** 2 for label in labels))
+    right_norm = math.sqrt(sum(right.get(label, 0.0) ** 2 for label in labels))
     if left_norm == 0 or right_norm == 0:
         return 0.0
     return dot / (left_norm * right_norm)
