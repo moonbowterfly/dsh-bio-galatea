@@ -190,6 +190,7 @@ def compare_structures(reference_path, model_path, reference_chain=None, model_c
 
     plddt = _plddt_summary(predicted)
     rmsd = float(superimposer.rms)
+    fraction_ca_within_2a = sum(item["deviation"] <= 2.0 for item in deviations) / len(atom_pairs)
     warnings = []
     if len(reference_residues) != len(predicted_residues):
         warnings.append("reference and folded sequence lengths differ; metrics use sequence-aligned C-alpha pairs")
@@ -197,6 +198,7 @@ def compare_structures(reference_path, model_path, reference_chain=None, model_c
         warnings.append("some aligned residues lack a C-alpha atom and were omitted")
     metrics = {
         "monomer_ca_rmsd": round(rmsd, 4),
+        "fraction_ca_within_2A": round(fraction_ca_within_2a, 4),
         "n_aligned": len(atom_pairs),
         "length_ref": len(reference_residues),
         "length_model": len(predicted_residues),

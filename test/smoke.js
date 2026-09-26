@@ -148,9 +148,11 @@ console.log('L1 协议与逻辑')
 
 {
   const campaignDir = mkdtempSync(join(tmpdir(), 'galatea-loop-smoke-'))
+  const contactCampaignDir = mkdtempSync(join(tmpdir(), 'galatea-loop-contact-smoke-'))
+  const insufficientCampaignDir = mkdtempSync(join(tmpdir(), 'galatea-loop-insufficient-smoke-'))
   const emptyCampaignDir = mkdtempSync(join(tmpdir(), 'galatea-loop-empty-'))
   const sequenceBase = 'ACDEFGHIKLMNPQRSTVWY'.repeat(3)
-  function loopCandidates(roundIndex) {
+  function loopCandidates(roundIndex, withContactConsensus = false, contactStatus = 'PASS') {
     const candidates = Array.from({ length: 18 }, (_, index) => {
       const center = 0.40 + index * 0.025 + roundIndex * 0.006
       const spread = index % 3 === 0 ? 0.12 : 0.01
@@ -164,6 +166,12 @@ console.log('L1 协议与逻辑')
         scores: { p1: center + spread, p2: center - spread },
         sequence: sequence.join(''),
         qc_status: index % 2 ? 'PASS' : 'WARN',
+        ...(withContactConsensus ? {
+          contact_consensus: {
+            anchor_residues: contactStatus === 'INSUFFICIENT' ? [] : ['B42'],
+            status: contactStatus,
+          },
+        } : {}),
       }
     })
     candidates.push({
@@ -212,6 +220,9 @@ console.log('L1 协议与逻辑')
       plan?.eligibility?.excluded_qc_fail === 1 && parents.every((parent) => !parent.candidate_id.startsWith('fail_')))
     check('loop.next: 默认本地操作配额为 16/8/8',
       JSON.stringify(localCounts) === JSON.stringify([16, 8, 8]), JSON.stringify(localCounts))
+    check('loop.next: 缺少 contact-consensus 时保留 anchor 降级 note',
+      parents.every((parent) => !Array.isArray(parent.anchor_residues) &&
+        parent.operator_notes.some((note) => note.includes('no contact-consensus input'))))
     console.log('  synthetic campaign sample:', JSON.stringify({
       round: plan?.round,
       n_parents: parents.length,
@@ -228,6 +239,28 @@ console.log('L1 协议与逻辑')
     check('loop.next: 同输入双跑输出深度相等',
       nextAgain.json?.ok === true && JSON.stringify(next.json) === JSON.stringify(nextAgain.json))
 
+    const contactLog = await runOp('loop', {
+      action: 'log', campaign_dir: contactCampaignDir,
+      round: { round_id: 0, candidates: loopCandidates(0, true), notes: 'synthetic contact-consensus round' },
+    })
+    const contactNext = await runOp('loop', { action: 'next', campaign_dir: contactCampaignDir })
+    const contactParents = contactNext.json?.round_plan?.parents || []
+    check('loop.next: valid contact-consensus carries candidate anchors and status note',
+      contactLog.json?.ok === true && contactParents.length > 0 &&
+      contactParents.every((parent) => JSON.stringify(parent.anchor_residues) === JSON.stringify(['B42']) &&
+        parent.operator_notes.some((note) => note === 'anchor residues from contact-consensus (n=1, status=PASS)')))
+    const insufficientLog = await runOp('loop', {
+      action: 'log', campaign_dir: insufficientCampaignDir,
+      round: { round_id: 0, candidates: loopCandidates(0, true, 'INSUFFICIENT') },
+    })
+    const insufficientNext = await runOp('loop', { action: 'next', campaign_dir: insufficientCampaignDir })
+    const insufficientParents = insufficientNext.json?.round_plan?.parents || []
+    check('loop.next: INSUFFICIENT contact-consensus carries no anchors and keeps degrade note',
+      insufficientLog.json?.ok === true && insufficientParents.length > 0 &&
+      insufficientParents.every((parent) => Array.isArray(parent.anchor_residues) &&
+        parent.anchor_residues.length === 0 &&
+        parent.operator_notes.some((note) => note.includes('no contact-consensus input'))))
+
     const status = await runOp('loop', { action: 'status', campaign_dir: campaignDir })
     check('loop.status: 汇总两轮、谱系、推广统计和最新计划路径',
       status.json?.ok === true && status.json?.status?.rounds === 2 &&
@@ -243,6 +276,8 @@ console.log('L1 协议与逻辑')
       /no logged rounds/.test(emptyNext.json?.error || ''))
   } finally {
     rmSync(campaignDir, { recursive: true, force: true })
+    rmSync(contactCampaignDir, { recursive: true, force: true })
+    rmSync(insufficientCampaignDir, { recursive: true, force: true })
     rmSync(emptyCampaignDir, { recursive: true, force: true })
   }
 }
@@ -298,9 +333,13 @@ if (existsSync(FIXTURE) && hasBio) {
   const snippet = `
 import json, os, sys, tempfile
 sys.path.insert(0, ${JSON.stringify(PYDIR)})
-from Bio.PDB import PDBIO, PDBParser
-from redesign_tools import build_redesign_plan, run_redesign, write_fixed_residues
+import numpy as np
+from Bio.PDB import Atom, Chain, MMCIFIO, Model, PDBIO, PDBParser, Residue, Structure
+import redesign_tools
+from redesign_tools import (_core_mutation_fraction, _structural_region, build_redesign_plan,
+                            calculate_regions, run_redesign, write_fixed_residues)
 from refold_tools import classify_secondary_structure, compare_structures, run_refold
+from contact_tools import run_contact_consensus
 import mpnn_design
 
 fixture = ${JSON.stringify(FIXTURE)}
@@ -311,11 +350,75 @@ binder = [res for res in PDBParser(QUIET=True).get_structure('x', fixture)[0]['A
           if res.id[0] == ' ']
 from struct_analysis import _residue_label
 all_labels = [_residue_label(res) for res in binder]
-assert set(base['fixed_positions']) == set(base['regions']['interface'])
-assert set(base['design_positions']) == set(all_labels) - set(base['regions']['interface'])
-assert set(base['regions']['interface']).isdisjoint(base['regions']['shell'])
+assert set(base['fixed_positions']) == set(base['regions']['interface_contact'])
+assert set(base['design_positions']) == set(all_labels) - set(base['regions']['interface_contact'])
+assert set(base['regions']['interface_contact']).isdisjoint(base['regions']['target_shell'])
+assert set(base['regions']['interface_contact']).isdisjoint(base['regions']['structural_shell'])
+assert set(base['regions']['core']).isdisjoint(base['regions']['boundary'])
 assert set(base['regions']['core']).isdisjoint(base['regions']['surface'])
-assert set(base['regions']['core']) | set(base['regions']['surface']) == set(all_labels)
+assert set(base['regions']['boundary']).isdisjoint(base['regions']['surface'])
+assert set(base['regions']['core']) | set(base['regions']['boundary']) | set(base['regions']['surface']) == set(all_labels)
+assert set(base['regions']['interface']) == set(base['regions']['interface_contact']) | set(base['regions']['interface_buried'])
+assert len(base['residue_table']) == len(all_labels)
+assert all({'chain', 'resid', 'aa', 'sasa', 'rsasa', 'structural_region', 'min_target_dist',
+            'interface_contact', 'delta_sasa', 'interface_buried', 'target_shell',
+            'structural_shell', 'anchor'} <= set(row) for row in base['residue_table'])
+assert [_structural_region(value) for value in (0.10, 0.1001, 0.2499, 0.25)] == [
+    'CORE', 'BOUNDARY', 'BOUNDARY', 'SURFACE']
+
+def new_structure(name):
+    structure = Structure.Structure(name)
+    model = Model.Model(0)
+    structure.add(model)
+    return structure, model
+
+def add_ca(chain, resid, xyz, serial, element='C'):
+    residue = Residue.Residue((' ', resid, ' '), 'ALA', ' ')
+    atom_name = 'CA' if element == 'C' else 'H'
+    residue.add(Atom.Atom(atom_name, np.asarray(xyz, dtype=np.float32), 1.0, 1.0,
+                          ' ', f'{atom_name:>4}', serial, element=element))
+    chain.add(residue)
+
+with tempfile.TemporaryDirectory(prefix='galatea-region-v2-smoke-') as temp:
+    toy, toy_model = new_structure('region-v2')
+    target = Chain.Chain('A'); binder_chain_obj = Chain.Chain('B')
+    toy_model.add(target); toy_model.add(binder_chain_obj)
+    add_ca(target, 1, (0, 0, 0), 1)
+    add_ca(binder_chain_obj, 1, (3, 0, 0), 2)
+    add_ca(binder_chain_obj, 2, (0, 7, 0), 3)
+    add_ca(binder_chain_obj, 3, (9, 0, 0), 4)
+    io = PDBIO(); io.set_structure(toy)
+    toy_path = os.path.join(temp, 'shells.pdb'); io.save(toy_path)
+    toy_regions = calculate_regions(toy_path, 'B', 'A')
+    toy_rows = {row['label']: row for row in toy_regions['residue_table']}
+    assert toy_regions['regions']['target_shell'] == ['B2']
+    assert toy_regions['regions']['structural_shell'] == ['B3']
+    assert set(toy_regions['regions']['shell']) == {'B2', 'B3'}
+    assert toy_rows['B1']['interface_contact'] is True
+    assert toy_rows['B1']['delta_sasa'] >= 1.0 and toy_rows['B1']['interface_buried'] is True
+    assert 'B1' in toy_regions['regions']['interface']
+    assert toy_rows['B3']['min_target_dist'] > 8.0
+
+actual_region_data = calculate_regions(fixture, 'A')
+core_label = next(label for label in all_labels
+                  if label not in set(actual_region_data['regions']['interface_contact'])
+                  and label not in set(actual_region_data['regions']['anchor']))
+synthetic_region_data = dict(actual_region_data)
+synthetic_regions = dict(actual_region_data['regions'])
+synthetic_regions['core'] = [core_label]
+synthetic_regions['boundary'] = []
+synthetic_regions['surface'] = [label for label in all_labels if label != core_label]
+synthetic_region_data['regions'] = synthetic_regions
+synthetic_region_data['counts'] = {name: len(values) for name, values in synthetic_regions.items()}
+original_calculate_regions = redesign_tools.calculate_regions
+redesign_tools.calculate_regions = lambda *args, **kwargs: synthetic_region_data
+try:
+    scaffold_core = build_redesign_plan(fixture, 'A', mode='scaffold-rescue')
+finally:
+    redesign_tools.calculate_regions = original_calculate_regions
+assert core_label in scaffold_core['design_positions'] and core_label not in scaffold_core['fixed_positions']
+core_fraction = _core_mutation_fraction('ACDE', 'TCDE', ['A1', 'A2', 'A3', 'A4'], ['A1', 'A2'])
+assert core_fraction == 0.5
 
 freq = {all_labels[0]: 0.9, all_labels[-1]: 0.2}
 anchor = build_redesign_plan(fixture, 'A', mode='anchor-preserving', contact_frequencies=freq)
@@ -327,9 +430,9 @@ assert degraded['mode'] == 'interface-refine' and degraded['degraded'] is True
 assert degraded['degraded_reason'] == 'no contact frequencies'
 
 scaffold = build_redesign_plan(fixture, 'A', mode='scaffold-rescue')
-scaffold_fixed = set(scaffold['regions']['interface']) | set(scaffold['regions']['core'])
-assert scaffold_fixed <= set(scaffold['fixed_positions'])
-assert set(scaffold['design_positions']) <= set(scaffold['regions']['shell']) | set(scaffold['regions']['surface'])
+scaffold_fixed = set(scaffold['regions']['interface_contact']) | set(scaffold['regions']['anchor'])
+assert set(scaffold['fixed_positions']) == scaffold_fixed
+assert set(scaffold['design_positions']) == set(all_labels) - scaffold_fixed
 assert not set(scaffold['fixed_positions']) & set(scaffold['design_positions'])
 full = build_redesign_plan(fixture, 'A', mode='full-explore')
 assert not full['fixed_positions'] and set(full['design_positions']) == set(all_labels)
@@ -354,12 +457,13 @@ with tempfile.TemporaryDirectory(prefix='galatea-mpnn-wrapper-smoke-') as root:
     open(os.path.join(vendor, 'run.py'), 'w', encoding='utf-8').close()
     open(checkpoint, 'w', encoding='utf-8').close()
     captured = []
+    mock_design_seq = 'ACDF'
     def fake_run(command, **kwargs):
         captured.append((command, kwargs))
         out_folder = command[command.index('--out_folder') + 1]
         os.makedirs(os.path.join(out_folder, 'seqs'), exist_ok=True)
         with open(os.path.join(out_folder, 'seqs', 'mock.fa'), 'w', encoding='utf-8') as fh:
-            fh.write('>native,T=0.1,seed=7\\nACDE\\n>sample,id=1,T=0.1,seed=7,overall_confidence=0.9,seq_rec=0.75\\nACDF\\n')
+            fh.write('>native,T=0.1,seed=7\\nACDE\\n>sample,id=1,T=0.1,seed=7,overall_confidence=0.9,seq_rec=0.75\\n' + mock_design_seq + '\\n')
         from types import SimpleNamespace
         return SimpleNamespace(returncode=0, stdout='', stderr='')
     original_run = mpnn_design.subprocess.run
@@ -398,12 +502,31 @@ with tempfile.TemporaryDirectory(prefix='galatea-mpnn-wrapper-smoke-') as root:
         }, root, lambda _: os.path.join(root, 'default'))
         assert all_fixed['ok'] is True and all_fixed['design_positions'] == []
         assert all_fixed['warnings'] and '无可设计位点' in all_fixed['warnings'][0]
+
+        mutant = list('ACDE')
+        core_index = all_labels.index(core_label)
+        mutant[core_index] = 'W' if mutant[core_index] != 'W' else 'A'
+        mock_design_seq = ''.join(mutant)
+        original_calc = redesign_tools.calculate_regions
+        redesign_tools.calculate_regions = lambda *args, **kwargs: synthetic_region_data
+        try:
+            core_warning = run_redesign({
+                'structure_path': fixture, 'binder_chain': 'A', 'mode': 'scaffold-rescue',
+                'n_sequences': 1, 'seed': 7, 'out_dir': os.path.join(root, 'redesign-core-warning'),
+            }, root, lambda _: os.path.join(root, 'default'))
+        finally:
+            redesign_tools.calculate_regions = original_calc
+            mock_design_seq = 'ACDF'
+        assert core_warning['ok'] is True
+        assert core_warning['designs'][0]['core_mutation_fraction'] == 1.0
+        assert any(warning.startswith('WARN: core_mutation_fraction=') for warning in core_warning['warnings'])
     finally:
         mpnn_design.subprocess.run = original_run
         mpnn_design._pick_runner = original_pick_runner
 
 same_metrics = compare_structures(fixture, fixture, reference_chain='A', model_chain='A')
 assert same_metrics['metrics']['monomer_ca_rmsd'] < 1e-6
+assert same_metrics['metrics']['fraction_ca_within_2A'] == 1.0
 assert same_metrics['metrics']['n_aligned'] == same_metrics['metrics']['length_ref']
 
 with tempfile.TemporaryDirectory(prefix='galatea-refold-smoke-') as temp:
@@ -417,6 +540,18 @@ with tempfile.TemporaryDirectory(prefix='galatea-refold-smoke-') as temp:
     perturbed_path = os.path.join(temp, 'perturbed.pdb'); io.save(perturbed_path)
     perturbed = compare_structures(fixture, perturbed_path, reference_chain='A', model_chain='A')
     assert 0.0 < perturbed['metrics']['monomer_ca_rmsd'] < 1.0
+    assert 0.0 <= perturbed['metrics']['fraction_ca_within_2A'] <= 1.0
+
+    outlier_structure = parser.get_structure('outlier', fixture)
+    outlier_chain = outlier_structure[0]['A']
+    first_ca = next(residue['CA'] for residue in outlier_chain if 'CA' in residue)
+    first_ca.coord[0] += 20.0
+    io.set_structure(outlier_structure)
+    outlier_path = os.path.join(temp, 'outlier.pdb'); io.save(outlier_path)
+    outlier = compare_structures(fixture, outlier_path, reference_chain='A', model_chain='A')
+    expected_f2 = sum(row['deviation'] <= 2.0 for row in outlier['metrics']['top_deviations']) / outlier['metrics']['n_aligned']
+    assert outlier['metrics']['fraction_ca_within_2A'] == round(expected_f2, 4)
+    assert outlier['metrics']['fraction_ca_within_2A'] < 1.0
 
     shorter_structure = parser.get_structure('shorter', fixture)
     shorter_chain = shorter_structure[0]['A']
@@ -434,6 +569,188 @@ ubq_chain = next(chain for chain in ubq if any(res.id[0] == ' ' for res in chain
 ss = classify_secondary_structure(ubq_chain)
 ss_counts = {state: sum(value == state for value in ss.values()) for state in ('helix', 'strand', 'coil')}
 assert ss_counts['helix'] > 0 and ss_counts['strand'] > 0
+
+contact_summary = {}
+with tempfile.TemporaryDirectory(prefix='galatea-contact-consensus-smoke-') as temp:
+    contact_paths = []
+    for index in range(10):
+        structure, model = new_structure(f'contact-{index}')
+        target_chain_obj = Chain.Chain('A'); binder_chain_obj = Chain.Chain('B')
+        model.add(target_chain_obj); model.add(binder_chain_obj)
+        add_ca(target_chain_obj, 1, (0, 0, 0), 1)
+        add_ca(target_chain_obj, 2, (20, 0, 0), 2)
+        add_ca(target_chain_obj, 3, (100, 0, 0), 3)
+        add_ca(target_chain_obj, 4, (300, 0, 0), 10)
+        binder_1 = (3, 0, 0) if index < 5 else (23, 0, 0) if index < 7 else (50, 0, 0)
+        binder_2 = (23, 0, 0) if index < 8 else (70, 0, 0)
+        binder_3 = (104, 0, 0) if index == 0 else (103, 0, 0) if index < 4 else (3, 0, 0) if index < 7 else (150, 0, 0)
+        add_ca(binder_chain_obj, 1, binder_1, 4)
+        add_ca(binder_chain_obj, 2, binder_2, 5)
+        add_ca(binder_chain_obj, 3, binder_3, 6)
+        if index >= 8:
+            add_ca(target_chain_obj, 5, binder_1, 7, element='H')
+            add_ca(target_chain_obj, 6, binder_2, 8, element='H')
+            add_ca(target_chain_obj, 7, binder_3, 9, element='H')
+        io = PDBIO(); io.set_structure(structure)
+        path = os.path.join(temp, f'model_{index:02d}.pdb')
+        io.save(path); contact_paths.append(path)
+
+    cif_structure, cif_model = new_structure('cif-no-occupancy')
+    cif_target = Chain.Chain('A'); cif_binder = Chain.Chain('B')
+    cif_model.add(cif_target); cif_model.add(cif_binder)
+    add_ca(cif_target, 1, (0, 0, 0), 1)
+    add_ca(cif_binder, 1, (3, 0, 0), 2)
+    cif_path = os.path.join(temp, 'missing-occupancy.cif')
+    cif_io = MMCIFIO(); cif_io.set_structure(cif_structure); cif_io.save(cif_path)
+    with open(cif_path, 'r', encoding='utf-8') as handle:
+        cif_lines = handle.readlines()
+    cif_loop = next(index for index, line in enumerate(cif_lines) if line.strip().lower() == 'loop_' and
+                    any(row.startswith('_atom_site.') for row in cif_lines[index + 1:index + 40]))
+    cif_headers = []
+    cif_data_start = cif_loop + 1
+    while cif_data_start < len(cif_lines) and cif_lines[cif_data_start].lstrip().startswith('_'):
+        cif_headers.append(cif_lines[cif_data_start].strip().split()[0])
+        cif_data_start += 1
+    occupancy_index = cif_headers.index('_atom_site.occupancy')
+    cif_lines = [line for index, line in enumerate(cif_lines) if index != cif_loop + 1 + occupancy_index]
+    for index in range(cif_data_start - 1, len(cif_lines)):
+        line = cif_lines[index]
+        if not line.strip() or line.strip().startswith('#'):
+            break
+        tokens = line.split()
+        if tokens and tokens[0] in ('ATOM', 'HETATM'):
+            del tokens[occupancy_index]
+            cif_lines[index] = ' '.join(tokens) + chr(10)
+    with open(cif_path, 'w', encoding='utf-8') as handle:
+        handle.writelines(cif_lines)
+    no_occupancy = run_contact_consensus({
+        'models': [cif_path], 'binder_chain': 'B', 'target_chain': 'A',
+        'artifact_path': os.path.join(temp, 'no-occupancy.json'),
+    })
+    assert no_occupancy['ok'] is True
+    assert no_occupancy['result']['coverage'] == {'expected_models': 1, 'valid_models': 1}
+    assert no_occupancy['result']['pair_contacts']['B1|A1'] == 1.0
+
+    def run_contact(paths, artifact_name, **extra):
+        return run_contact_consensus({
+            'models': paths, 'binder_chain': 'B', 'target_chain': 'A',
+            'candidate_id': artifact_name,
+            'artifact_path': os.path.join(temp, artifact_name + '.json'), **extra,
+        })
+
+    mixed_paths = []
+    for index, (binder_id, target_ids) in enumerate((('C', ('A', 'B')), ('A', ('B', 'C')))):
+        mixed_structure, mixed_model = new_structure(f'mixed-chain-{index}')
+        mixed_chains = {chain_id: Chain.Chain(chain_id) for chain_id in ('A', 'B', 'C')}
+        for chain_id in ('A', 'B', 'C'):
+            mixed_model.add(mixed_chains[chain_id])
+        first_target, second_target = target_ids
+        add_ca(mixed_chains[first_target], 1, (0, 0, 0), 1)
+        add_ca(mixed_chains[first_target], 2, (0, 40, 0), 2)
+        add_ca(mixed_chains[second_target], 1, (20, 0, 0), 3)
+        add_ca(mixed_chains[second_target], 2, (20, 40, 0), 4)
+        add_ca(mixed_chains[binder_id], 1, (3, 0, 0), 5)
+        mixed_io = PDBIO(); mixed_io.set_structure(mixed_structure)
+        mixed_path = os.path.join(temp, f'mixed_{index:02d}.pdb')
+        mixed_io.save(mixed_path); mixed_paths.append(mixed_path)
+    mixed_auto = run_contact_consensus({
+        'models': mixed_paths,
+        'artifact_path': os.path.join(temp, 'mixed-auto.json'),
+    })
+    mixed_result = mixed_auto['result']
+    assert mixed_auto['ok'] is True
+    assert mixed_result['coverage'] == {'expected_models': 2, 'valid_models': 2}
+    assert mixed_result['binder_residues'] == {
+        'C1': {'contact_freq': 1.0, 'max_pair_freq': 1.0, 'median_min_dist_A': 3.0, 'anchor': False},
+    }
+    assert mixed_result['pair_contacts'] == {'C1|A1': 1.0}
+    assert mixed_result['jaccard'] == {
+        'residue_mean': 1.0, 'residue_min': 1.0, 'edge_mean': 1.0, 'edge_min': 1.0,
+    }
+    assert mixed_result['chain_assignments']['mixed_01.pdb'] == {
+        'binder_chain': 'A', 'target_chains': ['B', 'C'],
+    }
+    assert mixed_result['chain_label_mappings']['mixed_01.pdb'] == {
+        'binder_chain': {'source': 'A', 'canonical': 'C'},
+        'target_chains': {'B': 'A', 'C': 'B'},
+    }
+
+    three = run_contact([contact_paths[0], contact_paths[1], contact_paths[8]], 'three-model')
+    assert three['ok'] is True
+    three_result = three['result']
+    assert three_result['coverage'] == {'expected_models': 3, 'valid_models': 3}
+    assert three_result['status'] == 'INSUFFICIENT' and three_result['anchor_residues'] == []
+    assert three_result['binder_residues']['B1']['contact_freq'] == 0.6667
+    assert three_result['binder_residues']['B1']['max_pair_freq'] == 0.6667
+    assert three_result['pair_contacts']['B1|A1'] == 0.6667
+    assert three_result['target_residues']['A1']['contact_freq'] == 0.6667
+    assert three_result['jaccard'] == {
+        'residue_mean': 0.3333, 'residue_min': 0.0, 'edge_mean': 0.3333, 'edge_min': 0.0,
+    }
+    matrix_path = three_result['artifact_path']
+    with open(matrix_path, 'rb') as fh: first_artifact = fh.read()
+    three_again = run_contact([contact_paths[0], contact_paths[1], contact_paths[8]], 'three-model')
+    with open(matrix_path, 'rb') as fh: second_artifact = fh.read()
+    assert three_again == three and first_artifact == second_artifact
+    matrices = json.loads(first_artifact.decode('utf-8'))
+    assert len(matrices['residue_jaccard']) == len(matrices['edge_jaccard']) == 3
+
+    full_contact = run_contact(contact_paths, 'ten-model')['result']
+    warn = run_contact(contact_paths[:6] + [contact_paths[8]], 'seven-model')['result']
+    insufficient = run_contact(contact_paths[:4] + [contact_paths[8]], 'five-model')['result']
+    assert full_contact['coverage'] == {'expected_models': 10, 'valid_models': 10}
+    assert full_contact['status'] == 'PASS' and full_contact['anchor_residues'] == ['B1', 'B2']
+    assert full_contact['binder_residues']['B1']['contact_freq'] == 0.7
+    assert full_contact['binder_residues']['B1']['max_pair_freq'] == 0.5
+    assert full_contact['binder_residues']['B1']['anchor'] is True
+    assert full_contact['binder_residues']['B3']['contact_freq'] == 0.7
+    assert full_contact['binder_residues']['B3']['max_pair_freq'] == 0.4
+    assert full_contact['binder_residues']['B3']['anchor'] is False
+    assert full_contact['pair_contacts']['B1|A1'] == 0.5
+    assert full_contact['pair_contacts']['B1|A2'] == 0.2
+    assert full_contact['pair_contacts']['B3|A3'] == 0.4
+    assert full_contact['pair_contacts']['B3|A1'] == 0.3
+    assert warn['coverage'] == {'expected_models': 7, 'valid_models': 7}
+    assert warn['status'] == 'WARN' and warn['anchor_residues'] == ['B1', 'B2', 'B3']
+    assert insufficient['coverage'] == {'expected_models': 5, 'valid_models': 5}, insufficient
+    assert insufficient['status'] == 'INSUFFICIENT' and insufficient['anchor_residues'] == []
+    assert insufficient['binder_residues']['B1']['contact_freq'] == 0.8
+
+    auto = run_contact_consensus({
+        'models': contact_paths[:2], 'artifact_path': os.path.join(temp, 'auto.json'),
+    })
+    assert auto['ok'] is True
+    assert all(row['binder_chain'] == 'B' and row['target_chains'] == ['A']
+               for row in auto['result']['chain_assignments'].values())
+    by_glob = run_contact_consensus({
+        'models_dir': temp, 'glob': 'model_0[0-7].pdb', 'binder_chain': 'B', 'target_chain': 'A',
+        'artifact_path': os.path.join(temp, 'glob.json'),
+    })
+    assert by_glob['ok'] is True and by_glob['result']['coverage']['expected_models'] == 8
+    empty_models = run_contact_consensus({'models': []})
+    duplicate_models = run_contact_consensus({
+        'models': [contact_paths[0], contact_paths[0]], 'binder_chain': 'B', 'target_chain': 'A',
+    })
+    bad_path = os.path.join(temp, 'invalid.pdb')
+    open(bad_path, 'w', encoding='utf-8').write('')
+    unreadable = run_contact_consensus({'models': [bad_path], 'binder_chain': 'B', 'target_chain': 'A'})
+    assert empty_models['ok'] is False and unreadable['ok'] is False
+    contact_summary = {
+        'three_model_freq': three_result['binder_residues']['B1']['contact_freq'],
+        'three_model_pair_freq': three_result['pair_contacts']['B1|A1'],
+        'three_model_jaccard': three_result['jaccard'],
+        'full_status': full_contact['status'], 'full_valid': full_contact['coverage']['valid_models'],
+        'full_anchors': full_contact['anchor_residues'], 'warn_status': warn['status'],
+        'insufficient_status': insufficient['status'], 'artifact_path': matrix_path,
+        'deterministic': three_again == three and first_artifact == second_artifact,
+        'bad_inputs_ok': empty_models['ok'] is False and duplicate_models['ok'] is False and unreadable['ok'] is False,
+        'missing_occupancy_valid': no_occupancy['result']['coverage']['valid_models'] == 1,
+        'auto_mixed_labels_consistent': mixed_auto['ok'] is True and
+            mixed_result['binder_residues'].get('C1', {}).get('contact_freq') == 1.0 and
+            mixed_result['chain_label_mappings']['mixed_01.pdb']['binder_chain'] == {
+                'source': 'A', 'canonical': 'C'},
+        'artifact_written': os.path.isfile(matrix_path),
+    }
 import fold_esm
 original_fold_sequences = fold_esm.fold_sequences
 fold_esm.fold_sequences = lambda *args, **kwargs: {
@@ -450,6 +767,8 @@ finally:
 print(json.dumps({
     'base': base, 'anchor': anchor, 'degraded': degraded, 'scaffold': scaffold,
     'full': full, 'explicit': explicit, 'mask_tokens': mask_tokens,
+    'toy_regions': toy_regions, 'scaffold_core': scaffold_core,
+    'core_fraction': core_fraction, 'core_warning': core_warning,
     'mpnn_wrapper': {'masked_ok': masked_result.get('status') == 'ok',
                      'masked_fixed': masked_command[masked_command.index('--fixed_residues') + 1],
                      'masked_design': masked_command[masked_command.index('--redesigned_residues') + 1],
@@ -457,23 +776,41 @@ print(json.dumps({
                      'legacy_has_redesigned': '--redesigned_residues' in legacy_command,
                      'redesign_ok': redesign_result['ok'],
                      'redesign_files': redesign_result['files']},
-    'same_metrics': same_metrics, 'perturbed_metrics': perturbed,
+    'same_metrics': same_metrics, 'perturbed_metrics': perturbed, 'outlier_metrics': outlier,
     'shorter_metrics': shorter, 'ubq_ss_counts': ss_counts,
+    'contact_summary': contact_summary,
     'fold_failure': fold_failure, 'warnings_empty': all_fixed['warnings'],
 }))
 `
   const r = await runPythonSnippet(snippet)
   const sample = r.json
-  check('redesign: interface/shell disjoint, core/surface partition covers binder',
+  check('redesign: contact/shell definitions and three rSASA regions partition binder',
     r.code === 0 && !!sample?.base &&
-    JSON.stringify(sample.base.regions.interface.filter((x) => sample.base.regions.shell.includes(x))) === '[]' &&
-    sample.base.counts.binder === sample.base.regions.core.length + sample.base.regions.surface.length,
+    JSON.stringify(sample.base.regions.interface_contact.filter((x) => sample.base.regions.target_shell.includes(x) || sample.base.regions.structural_shell.includes(x))) === '[]' &&
+    sample.base.counts.binder === sample.base.regions.core.length + sample.base.regions.boundary.length + sample.base.regions.surface.length,
     r.err.slice(-240))
+  check('redesign: known rSASA cutoffs and per-residue SASA/interface table',
+    !!sample?.base?.residue_table && sample.base.residue_table.length === sample.base.counts.binder &&
+    sample.base.residue_table.every((row) => typeof row.rsasa === 'number' && typeof row.delta_sasa === 'number' &&
+      typeof row.interface_contact === 'boolean' && typeof row.interface_buried === 'boolean'))
+  check('redesign: ΔSASA interface union and independent target/structural shell definitions',
+    !!sample?.toy_regions && sample.toy_regions.regions.target_shell.includes('B2') &&
+    sample.toy_regions.regions.structural_shell.includes('B3') &&
+    !sample.toy_regions.regions.target_shell.includes('B3') &&
+    sample.toy_regions.regions.interface_contact.includes('B1') &&
+    sample.toy_regions.regions.interface_buried.includes('B1'))
   check('redesign: four preset masks and explicit position overrides',
     !!sample?.anchor && !!sample?.scaffold && !!sample?.full && !!sample?.explicit &&
     sample.anchor.fixed_positions.length === sample.anchor.regions.anchor.length &&
     sample.full.counts.fixed === 0 && sample.explicit.counts.fixed >= 1,
     r.err.slice(-240))
+  check('redesign: scaffold-rescue leaves CORE residues designable',
+    !!sample?.scaffold_core && sample.scaffold_core.design_positions.includes(sample.scaffold_core.regions.core[0]) &&
+    !sample.scaffold_core.fixed_positions.includes(sample.scaffold_core.regions.core[0]))
+  check('redesign: CORE mutation fraction >0.35 is recorded as WARN without rejection',
+    sample?.core_fraction === 0.5 && sample?.core_warning?.ok === true &&
+    sample.core_warning.designs[0].core_mutation_fraction === 1.0 &&
+    sample.core_warning.warnings.some((warning) => warning.startsWith('WARN: core_mutation_fraction=')))
   check('redesign: missing contact frequencies degrades anchor mode explicitly',
     sample?.degraded?.mode === 'interface-refine' && sample.degraded.degraded === true &&
     sample.degraded.degraded_reason === 'no contact frequencies')
@@ -495,6 +832,10 @@ print(json.dumps({
   check('refold: deterministic coordinate perturbation yields finite nonzero RMSD',
     sample?.perturbed_metrics?.metrics?.monomer_ca_rmsd > 0 &&
     sample.perturbed_metrics.metrics.monomer_ca_rmsd < 1.0)
+  check('refold: F2Å is the aligned Cα fraction within 2 Å',
+    sample?.same_metrics?.metrics?.fraction_ca_within_2A === 1.0 &&
+    sample?.outlier_metrics?.metrics?.fraction_ca_within_2A >= 0 &&
+    sample.outlier_metrics.metrics.fraction_ca_within_2A < 1.0)
   check('refold: unequal lengths align available residues and report warning',
     sample?.shorter_metrics?.metrics?.length_ref > sample?.shorter_metrics?.metrics?.length_model &&
     sample.shorter_metrics.metrics.n_aligned <= sample.shorter_metrics.metrics.length_model &&
@@ -504,6 +845,21 @@ print(json.dumps({
     JSON.stringify(sample?.ubq_ss_counts))
   check('refold: ESMFold failure returns explicit error without a success result',
     sample?.fold_failure?.ok === false && /did not produce/.test(sample.fold_failure.error || ''))
+  check('contact_consensus: residue, pair and dual-Jaccard layers with 2/3 frequency',
+    sample?.contact_summary?.three_model_freq === 0.6667 &&
+    sample.contact_summary.three_model_pair_freq === 0.6667 &&
+    sample.contact_summary.three_model_jaccard?.residue_mean === 0.3333 &&
+    sample.contact_summary.three_model_jaccard?.edge_mean === 0.3333 &&
+    sample.contact_summary.three_model_jaccard?.edge_min === 0)
+  check('contact_consensus: coverage, inclusive anchor thresholds, deterministic matrices and structured errors',
+    sample?.contact_summary?.full_status === 'PASS' && sample.contact_summary.full_valid === 10 &&
+    JSON.stringify(sample.contact_summary.full_anchors) === JSON.stringify(['B1', 'B2']) &&
+    sample.contact_summary.warn_status === 'WARN' && sample.contact_summary.insufficient_status === 'INSUFFICIENT' &&
+    sample.contact_summary.deterministic === true && sample.contact_summary.bad_inputs_ok === true &&
+    sample.contact_summary.missing_occupancy_valid === true &&
+    sample.contact_summary.artifact_written === true)
+  check('contact_consensus: auto chain-role normalization preserves cross-model residue identities',
+    sample?.contact_summary?.auto_mixed_labels_consistent === true)
   console.log('  mini-complex refold alignment sample:', JSON.stringify({
     metrics: sample?.same_metrics?.metrics, verdict: sample?.same_metrics?.verdict,
   }))

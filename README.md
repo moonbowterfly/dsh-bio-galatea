@@ -8,7 +8,7 @@
 ## 它解决什么问题
 
 蛋白质设计（binder / 酶 / 纳米抗体）的标准流程散布在十几个工具里：设计序列要 ProteinMPNN、
-验证折叠要 ESMFold、筛选结合要界面分析、选候选要聚类。本插件把它们收拢为 **13 个语义化工具**，
+验证折叠要 ESMFold、筛选结合要界面分析、选候选要聚类。本插件把它们收拢为 **14 个语义化工具**，
 让 dsh 里的 agent（及 genie 宿主）直接调用——并**明确标注本机边界**（co-folding 等重算力环节
 诚实指向外部服务，不伪装能力）。
 
@@ -25,11 +25,12 @@
    结构检查： galatea_inspect                # clash / pLDDT 分布
    多样性：   galatea_cluster                # 同一性聚类 + 代表序列
    迭代控制： galatea_loop(action="log|next|status")  # 多轮台账与下一轮计划，不执行生成
+   接触共识： galatea_contact_consensus             # 多模型界面频率、pair 和 anchor（不做排序）
    区域重设计： galatea_redesign                     # 按界面/anchor/骨架区域约束 MPNN
    复折叠救援： galatea_refold                       # 离开 target 后检查 binder 单体折叠
 ```
 
-## 13 个工具一览
+## 14 个工具一览
 
 | 工具 | 用途 | 典型耗时 |
 |---|---|---|
@@ -44,14 +45,17 @@
 | `galatea_rank` | 候选共识排序（多预测器等权共识 + 分档） | 秒级 |
 | `galatea_rank_aggregate` | 多批次排序结果聚合 → 统一排名 CSV | 秒级 |
 | `galatea_loop` | 多轮设计战役记账、父本选择、停止建议与下一轮计划（不执行生成） | 秒级 |
-| `galatea_redesign` | 区域约束重设计（冻结界面/anchor/核心，采样指定 binder 位点） | 分钟级 |
-| `galatea_refold` | ESMFold 单体复折叠；序列对齐 Cα RMSD、pLDDT 与二级结构一致性 | CPU 分钟级 |
+| `galatea_contact_consensus` | 多模型界面残基/pair 频率、Jaccard 矩阵与 anchor（设计控制信号，不参与排序） | 秒-分钟级 |
+| `galatea_redesign` | 区域约束重设计（冻结接触界面/anchor，支持 CORE/BOUNDARY/SURFACE） | 分钟级 |
+| `galatea_refold` | ESMFold 单体复折叠；序列对齐 Cα RMSD、F2Å、pLDDT 与二级结构一致性 | CPU 分钟级 |
 
 ## 区域重设计与单体复折叠
 
-`galatea_redesign` 接收 binder+target 复合物和 binder 链，按 4 Å 重原子接触计算 interface、按 8 Å 计算 shell，并以复合物中的 per-residue SASA 将 binder 划分为 core（<20 Å²）和 surface（≥20 Å²）。`interface-refine` 冻结界面，`anchor-preserving` 冻结频率≥0.7 的 anchor（缺频率时标记降级），`scaffold-rescue` 冻结 interface∪core，`full-explore` 设计全部位点。显式 `fixed_positions` / `design_positions` 覆盖 preset；结果写入 FASTA、JSON 元数据和 LigandMPNN 可读的固定残基清单。
+`galatea_redesign` 接收 binder+target 复合物和 binder 链，binder-alone Shrake–Rupley SASA（probe 1.4 Å）按 Tien et al. MaxASA 归一化为 rSASA，并分为 CORE（≤0.10）、BOUNDARY（0.10–0.25）和 SURFACE（≥0.25）。报告界面是 ≤4 Å 重原子接触与 ΔSASA≥1 Å² 的并集；hard-freeze 使用 ≤4 Å 接触。shell 是 target 4–8 Å 与 interface 周围 6 Å 的结构壳并集。`interface-refine` 冻结接触界面，`anchor-preserving` 冻结频率≥0.7 的 anchor（缺频率时标记降级），`scaffold-rescue` 只冻结接触界面和显式 anchor，让其余 CORE/BOUNDARY/SURFACE 位点参与设计；CORE 突变比例 >0.35 会记 WARN，不拒绝候选。显式 `fixed_positions` / `design_positions` 覆盖 preset；结果含逐残基表，并写入 FASTA、JSON 元数据和 LigandMPNN 可读的固定残基清单。
 
-`galatea_refold` 从复合物提取 binder 序列，用现有 ESMFold 流程进行单链预测，再按序列对齐比较参考和预测结构。输出的 RMSD、pLDDT 与 phi/psi 三态二级结构一致性阈值尚未校准，只适合候选排序；需经 `binder_eval` 校准后才能作为筛选条件。ESMFold 不可用或内存不足时会明确失败。
+`galatea_contact_consensus` 接收多份预测复合物 PDB/CIF，按 4 Å 重原子跨链接触汇总 binder/target 残基频率、稀疏 pair 频率、residue-set 与 edge-set Jaccard，并写出完整矩阵 artifact。coverage ≥8/≥6/<6 分别为 PASS/WARN/INSUFFICIENT；anchor 要求残基频率≥0.70 且至少一个 partner pair 频率≥0.50。链参数缺省时逐模型自动判定角色，汇总标签以按文件名排序的首个有效模型为准，并通过 `chain_label_mappings` 返回各模型原链 ID 到汇总标签的映射。该结果供 `galatea_loop` 的 anchor-fixed 操作与 redesign 使用，不是 ranking score。
+
+`galatea_refold` 从复合物提取 binder 序列，用现有 ESMFold 流程进行单链预测，再按序列对齐比较参考和预测结构。除 RMSD、pLDDT 与 phi/psi 三态二级结构一致性外，还记录对齐 Cα 偏差 ≤2 Å 的比例 F2Å；F2Å 只作记录，不改变 verdict。现有阈值尚未校准，需经 `binder_eval` 校准后才能作为筛选条件。ESMFold 不可用或内存不足时会明确失败。
 
 ## 设计迭代（`galatea_loop`）
 
@@ -87,7 +91,7 @@ MIT（本插件自身）。第三方组件许可见上「依赖与致谢」。
 ## English
 
 **dsh-bio-galatea** is the protein structure prediction & design member of the G-series dsh plugins.
-Thirteen semantic tools cover sequence design (ProteinMPNN/SolubleMPNN/LigandMPNN), region-constrained
+Fourteen semantic tools cover sequence design (ProteinMPNN/SolubleMPNN/LigandMPNN), region-constrained
 redesign, single-chain folding and refolding rescue, complex-interface analysis, sequence scoring,
 structure QC, and diversity clustering — with zero-manual-setup (private venv auto-bootstrap) and honest capability
 boundaries (heavy co-folding stays with external services). Designed to coexist with

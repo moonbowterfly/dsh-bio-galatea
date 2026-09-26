@@ -203,7 +203,7 @@ await test('degraded checks expose controlled remediation codes and a degraded s
   }
 })
 
-await test('capabilities exposes the thirteen-tool manifest with dependency marking', async () => {
+await test('capabilities exposes the fourteen-tool manifest with dependency marking', async () => {
   assert.equal(typeof integration?.createIntegrationService, 'function')
   const dataRoot = mkdtempSync(join(tmpdir(), 'galatea-integration-caps-'))
   const prevHF = process.env.HF_HOME
@@ -221,10 +221,10 @@ await test('capabilities exposes the thirteen-tool manifest with dependency mark
     assert.equal(response.ok, true)
     assert.equal(response.value.plugin_id, 'dsh-bio-galatea')
     assert.equal(response.value.plugin_version, '0.1.0')
-    assert.equal(response.value.tool_count, 13)
-    assert.equal(response.value.tools.length, 13)
+    assert.equal(response.value.tool_count, 14)
+    assert.equal(response.value.tools.length, 14)
     const names = response.value.tools.map((tool) => tool.name)
-    for (const expected of ['galatea_status', 'galatea_setup', 'galatea_mpnn', 'galatea_fold', 'galatea_interface', 'galatea_score', 'galatea_inspect', 'galatea_cluster', 'galatea_rank', 'galatea_rank_aggregate', 'galatea_loop', 'galatea_redesign', 'galatea_refold']) {
+    for (const expected of ['galatea_status', 'galatea_setup', 'galatea_mpnn', 'galatea_fold', 'galatea_interface', 'galatea_score', 'galatea_inspect', 'galatea_cluster', 'galatea_rank', 'galatea_rank_aggregate', 'galatea_loop', 'galatea_contact_consensus', 'galatea_redesign', 'galatea_refold']) {
       assert.ok(names.includes(expected), `missing tool ${expected}`)
     }
     // 缺依赖工具被标为 unavailable 并列出缺失项（python.torch 缺失 → mpnn/fold 不可用）

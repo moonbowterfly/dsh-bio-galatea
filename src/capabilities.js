@@ -64,6 +64,11 @@ export const TOOLS_MANIFEST = [
     cost_class: 'light', network: 'none', mutability: 'writes_output', status: 'ready',
     summary: '多轮设计战役控制：登记轮次、评估父本与谱系、输出确定性 predict-and-redesign 计划（不执行生成）' },
 
+  { name: 'galatea_contact_consensus', capability: 'galatea.design.contact-consensus', category: 'design',
+    cost_class: 'medium', network: 'none', mutability: 'writes_output', status: 'ready',
+    requires: ['runtime.analysis'],
+    summary: '多模型重原子界面接触一致性：残基/残基对频率、Jaccard 矩阵与 anchor；只作设计控制信号，不参与候选排序' },
+
   { name: 'galatea_redesign', capability: 'galatea.design.redesign', category: 'design',
     cost_class: 'heavy', network: 'none', mutability: 'writes_output', status: 'ready',
     requires: ['python.torch', 'runtime.mpnn'],

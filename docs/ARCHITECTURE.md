@@ -9,6 +9,7 @@
 - 序列设计（inverse folding）：ProteinMPNN / SolubleMPNN / LigandMPNN
 - 单链结构预测：ESMFold（CPU/GPU 自适应）
 - 复合物界面分析：接触 / 氢键 / 盐桥 / 埋藏 SASA / pLDDT 分带
+- 多模型界面接触一致性：残基与 pair 频率、Jaccard 矩阵、设计 anchor（不参与 ranking）
 - 序列理化打分、结构 QC（clash / pLDDT 分布）、候选聚类（多样性代表集）
 
 **不做什么**（明确边界；报告时如实说明「需外部服务」，不伪装能力）：
@@ -23,7 +24,7 @@
 | 文件 | 职责 |
 |---|---|
 | `index.js` | 主模块：`inject=['tools','skills']`（仅必选）；`webServer` 走 apply 内动态注入（非 web 部署时工具照常注册） |
-| `tools.js` | 13 语义化工具（`defineTool`）；**parameters/schema 是 agent 可见能力的唯一真相** |
+| `tools.js` | 14 语义化工具（`defineTool`）；**parameters/schema 是 agent 可见能力的唯一真相** |
 | `capabilities.js` | `TOOLS_MANIFEST` 单源（工具清单 + cost_class/network/mutability 元数据），供 integration 与宿主消费 |
 | `integration.js` | hosted-domain 集成协议 v1：`/health`、`/v1/status`、`/v1/capabilities`（loopback-only 三层守卫） |
 | `python.js` | 解释器解析链 + `callGalatea`（JSON stdin 协议）+ `stampProvenance` |
@@ -33,12 +34,13 @@
 
 | 文件 | 职责 |
 |---|---|
-| `galatea_ops.py` | 协议分发器（13 op）；三流 UTF-8；`_sanitize_json`；异常契约（恒 ok:true + stderr Traceback 头） |
+| `galatea_ops.py` | 协议分发器（14 op）；三流 UTF-8；`_sanitize_json`；异常契约（结构化业务错误 + stderr Traceback 头） |
 | `components.py` | 组件探测（status）+ 零手动自举（setup：env / mpnn / esmfold，幂等） |
 | `mpnn_design.py` | MPNN 包装：spawn vendor LigandMPNN `run.py` + 输出解析（seqs/*.fa） |
 | `redesign_tools.py` | binder 区域/接触/SASA 计算、preset mask 生成与 MPNN 重设计编排 |
+| `contact_tools.py` | 多模型重原子接触图、残基/pair 频率与 residue/edge Jaccard 矩阵；自动链角色归一到首个有效模型并返回映射；不计算排序分数 |
 | `fold_esm.py` + `_fold_worker.py` | ESMFold 编排 + 推理 worker（模型加载隔离在一次性子进程） |
-| `refold_tools.py` | ESMFold 单体复折叠、序列对齐 Cα RMSD、pLDDT、phi/psi 二级结构指标 |
+| `refold_tools.py` | ESMFold 单体复折叠、序列对齐 Cα RMSD/F2Å、pLDDT、phi/psi 二级结构指标 |
 | `struct_analysis.py` | 界面分析（interface）+ 结构 QC（inspect）；biopython |
 | `seq_analysis.py` | 序列理化打分（score）+ 聚类（cluster） |
 | `seqio_lite.py` | FASTA 读写（最小实现） |
@@ -66,7 +68,7 @@
 
 选择标准 = `import torch` 成功（进程内缓存；`setup` 成功后自动失效重探）。
 
-## 4. 工具 / op 对照（13 工具 = 13 op）
+## 4. 工具 / op 对照（14 工具 = 14 op）
 
 | 工具 | op | capability | 说明 |
 |---|---|---|---|
@@ -81,8 +83,9 @@
 | `galatea_rank` | rank.consensus | screening | 候选共识排序（等权共识 + 分档 strong≥0.73） |
 | `galatea_rank_aggregate` | rank.aggregate | screening | 多批次聚合 → 全局排名 CSV |
 | `galatea_loop` | loop | design | 多轮设计战役记账、父本筛选、停止建议与下一轮计划；不执行生成 |
-| `galatea_redesign` | redesign | design | 区域约束式 MPNN 重设计（interface/anchor/shell/core/surface masks） |
-| `galatea_refold` | refold | qc | binder 单体复折叠救援检查（RMSD/pLDDT/二级结构；阈值未校准） |
+| `galatea_contact_consensus` | contact_consensus | design | 多模型接触频率与 Jaccard 矩阵、anchor；只作设计控制信号 |
+| `galatea_redesign` | redesign | design | 区域约束式 MPNN 重设计（contact/anchor/双 shell/CORE/BOUNDARY/SURFACE masks） |
+| `galatea_refold` | refold | qc | binder 单体复折叠救援检查（RMSD/F2Å/pLDDT/二级结构；阈值未校准） |
 
 ## 5. 集成协议（宿主消费，v1 只读）
 

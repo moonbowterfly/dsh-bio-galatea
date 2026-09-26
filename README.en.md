@@ -11,7 +11,7 @@
 
 A standard protein-design pipeline (binders / enzymes / nanobodies) is scattered across a dozen
 tools: ProteinMPNN for sequences, ESMFold for fold validation, interface analysis for binding
-screening, clustering for candidate selection. This plugin gathers them into **8 semantic tools**
+screening, clustering for candidate selection. This plugin gathers them into **14 semantic tools**
 that agents in dsh (and the genie host) can call directly — with **explicit local boundaries**
 (heavy co-folding is honestly redirected to external services instead of pretending capability).
 
@@ -27,9 +27,10 @@ that agents in dsh (and the genie host) can call directly — with **explicit lo
    Phys-chem:     galatea_score                 # pI / net charge / hydrophobic moment / aggregation proxy
    Structure QC:  galatea_inspect               # clash / pLDDT distribution
    Diversity:     galatea_cluster               # identity clustering + representative set
+   Contact consensus: galatea_contact_consensus # multi-model contact frequencies and anchors
 ```
 
-## The 8 tools
+## The 14 tools
 
 | Tool | Purpose | Typical time |
 |---|---|---|
@@ -41,6 +42,12 @@ that agents in dsh (and the genie host) can call directly — with **explicit lo
 | `galatea_score` | Sequence phys-chem scoring (pI / net charge / GRAVY / hydrophobic moment / aggregation proxy) | seconds |
 | `galatea_inspect` | Structure QC (clash / pLDDT distribution) | seconds |
 | `galatea_cluster` | Candidate clustering (diversity representative set) | seconds–minutes |
+| `galatea_rank` | Candidate consensus ranking (equal-weight predictor mean + tiers) | seconds |
+| `galatea_rank_aggregate` | Merge ranking batches into a global ranking CSV | seconds |
+| `galatea_loop` | Multi-round campaign bookkeeping and deterministic next-round planning | seconds |
+| `galatea_contact_consensus` | Multi-model residue/pair contact frequencies, Jaccard matrices and anchors; automatic chain roles are normalized to the first valid model and exposed in `chain_label_mappings`; design control only | seconds–minutes |
+| `galatea_redesign` | Region-constrained binder redesign using contact, anchor, and rSASA regions | minutes |
+| `galatea_refold` | ESMFold monomer refold metrics including the Cα fraction within 2 Å (F2Å) | CPU minutes |
 
 ## Hardware boundaries (stated honestly)
 

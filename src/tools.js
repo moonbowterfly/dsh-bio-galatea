@@ -1,4 +1,4 @@
-// dsh-bio-galatea — 工具层（defineTool 注册，13 语义化工具，v0.1）
+// dsh-bio-galatea — 工具层（defineTool 注册，14 语义化工具，v0.1）
 // 全部执行走 python/galatea_ops.py（JSON stdin 协议）。
 // op 与工具对照（1:1）：status/setup/mpnn/fold/interface/score/inspect/cluster/loop/redesign/refold（同名）；rank.consensus→galatea_rank；rank.aggregate→galatea_rank_aggregate。
 import { defineTool } from '@deepseek-ai/dsh-tools'
@@ -293,6 +293,28 @@ export function registerTools(ctx) {
     },
     op: 'loop',
     timeoutMs: 120_000,
+  })))
+
+  // galatea_contact_consensus: 多模型接触一致性（设计控制信号，不做排序）
+  disposers.push(ctx.tools.register(galateaTool({
+    name: 'galatea_contact_consensus',
+    description:
+      '对一组预测复合物 PDB/CIF 计算跨链重原子接触一致性：输出 binder/target 残基频率、稀疏残基对频率、残基集与接触边 Jaccard、anchor 列表及完整矩阵 artifact。' +
+      '只供设计控制、anchor 选择与界面稳定性检查，不参与 candidate ranking。链缺省时逐模型按蛋白链长度识别角色，并以首个有效模型为 residue-label 基准，返回 chain_label_mappings；覆盖不足会明确标记 INSUFFICIENT。' +
+      '触发词：接触一致性、contact consensus、多模型界面稳定性、anchor residues。',
+    parameters: {
+      models: { type: 'array', items: { type: 'string' }, description: 'PDB/CIF 文件绝对路径列表（与 models_dir 二选一）' },
+      models_dir: { type: 'string', description: '或：包含模型文件的目录；缺省 glob 匹配 PDB/CIF' },
+      glob: { type: 'string', description: 'models_dir 内的文件模式，如 predicted_*_1to2.cif；缺省匹配 PDB/CIF' },
+      binder_chain: { type: 'string', description: 'binder 链 ID；缺省时按蛋白链长度唯一最短者自动推断' },
+      target_chain: { type: 'string', description: 'target 链 ID，多个用逗号分隔；缺省为 binder 外的所有蛋白链' },
+      cutoff: { type: 'number', exclusiveMinimum: 0, description: '跨链重原子接触距离 Å，缺省 4.0' },
+      candidate_id: { type: 'string', description: '候选 ID；缺省从模型目录名推断' },
+      artifact_path: { type: 'string', description: '完整 residue/edge Jaccard 矩阵 JSON 输出路径；缺省写入模型目录' },
+      additionalProperties: true,
+    },
+    op: 'contact_consensus',
+    timeoutMs: 300_000,
   })))
 
   // galatea_redesign: 区域约束式 binder 重设计

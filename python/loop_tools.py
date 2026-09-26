@@ -579,10 +579,17 @@ def _local_operators(total):
 
 
 def _find_contact_consensus(item):
+    """Return a minimally valid per-candidate consensus payload, or None."""
+    if not _is_mapping(item):
+        return None
     flags = item.get("flags", {})
-    return item.get("contact_consensus") is not None or (
-        _is_mapping(flags) and flags.get("contact_consensus") is not None
-    )
+    candidates = [item.get("contact_consensus")]
+    if _is_mapping(flags):
+        candidates.append(flags.get("contact_consensus"))
+    for value in candidates:
+        if _is_mapping(value) and isinstance(value.get("anchor_residues"), list):
+            return value
+    return None
 
 
 def _select_parents(latest_items, params, stop_lineages):
@@ -652,16 +659,27 @@ def _select_parents(latest_items, params, stop_lineages):
 
     local_ops = _local_operators(params["per_parent_local"])
     parents = []
-    has_contact = any(_find_contact_consensus(item) for item in latest_items)
     for item, role, reason_codes in selected:
         notes = []
+        contact_consensus = _find_contact_consensus(item)
         if not item.get("structure_path"):
             notes.append("no structure_path: execution should degrade interface-residue freezing; freeze binder residues within 4 A of any target heavy atom when structure input becomes available")
         else:
             notes.append("structure_path is recorded; loop does not inspect it, so confirm binder-target contact residues during execution")
-        if not has_contact:
+        if contact_consensus is None:
             notes.append("no contact-consensus input: anchor selection cannot enforce contact frequency >= 0.7 and must be marked as degraded")
-        parents.append({
+        else:
+            anchor_residues = [str(label).strip() for label in contact_consensus["anchor_residues"]
+                               if str(label).strip()]
+            status = str(contact_consensus.get("status") or "UNKNOWN").upper()
+            if status == "INSUFFICIENT":
+                anchor_residues = []
+                notes.append("no contact-consensus input: anchor selection cannot enforce contact frequency >= 0.7 and must be marked as degraded")
+            else:
+                notes.append(
+                    f"anchor residues from contact-consensus (n={len(anchor_residues)}, status={status})"
+                )
+        parent = {
             "candidate_id": item["candidate_id"],
             "role": role,
             "lineage_id": item["lineage_id"],
@@ -674,7 +692,10 @@ def _select_parents(latest_items, params, stop_lineages):
             "n_cloud": params["cloud_per_parent"],
             "reason_codes": reason_codes,
             "operator_notes": notes,
-        })
+        }
+        if contact_consensus is not None:
+            parent["anchor_residues"] = anchor_residues
+        parents.append(parent)
 
     warnings = []
     fallback_count = sum(1 for item in latest_items if len(item["predictor_scores"]) < 2)

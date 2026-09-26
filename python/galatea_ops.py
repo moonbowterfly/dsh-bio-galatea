@@ -225,6 +225,15 @@ def op_loop(args):
 
 
 # ---------------------------------------------------------------------------
+# op: contact_consensus — 多模型界面接触一致性（design-control signal；不参与排序）
+# ---------------------------------------------------------------------------
+def op_contact_consensus(args):
+    sys.dont_write_bytecode = True
+    from contact_tools import run_contact_consensus
+    return run_contact_consensus(args)
+
+
+# ---------------------------------------------------------------------------
 # op: redesign — 区域约束式 binder 重设计
 # ---------------------------------------------------------------------------
 def op_redesign(args):
@@ -254,6 +263,7 @@ OPS = {
     "rank.consensus": op_rank_consensus,
     "rank.aggregate": op_rank_aggregate,
     "loop": op_loop,
+    "contact_consensus": op_contact_consensus,
     "redesign": op_redesign,
     "refold": op_refold,
 }

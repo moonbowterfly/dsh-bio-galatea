@@ -11,9 +11,22 @@ PRESET_TEMPERATURES = {
     "full-explore": 0.25,
 }
 INTERFACE_CUTOFF_ANGSTROM = 4.0
-SHELL_CUTOFF_ANGSTROM = 8.0
-CORE_SASA_CUTOFF_ANGSTROM2 = 20.0
+TARGET_SHELL_CUTOFF_ANGSTROM = 8.0
+STRUCTURAL_SHELL_CUTOFF_ANGSTROM = 6.0
+SASA_PROBE_RADIUS_ANGSTROM = 1.4
+CORE_RSASA_CUTOFF = 0.10
+SURFACE_RSASA_CUTOFF = 0.25
+INTERFACE_BURIED_CUTOFF_ANGSTROM2 = 1.0
 ANCHOR_FREQUENCY_CUTOFF = 0.7
+
+# Tien et al. (2013), PLoS ONE 8(11):e80635, Table 1, ALLOWED-region
+# theoretical MaxASA values from Gly-X-Gly tripeptides (Å²).
+MAX_ASA_ANGSTROM2 = {
+    "A": 129.0, "R": 274.0, "N": 195.0, "D": 193.0, "C": 167.0,
+    "Q": 225.0, "E": 223.0, "G": 104.0, "H": 224.0, "I": 197.0,
+    "L": 201.0, "K": 236.0, "M": 224.0, "F": 240.0, "P": 159.0,
+    "S": 155.0, "T": 172.0, "W": 285.0, "Y": 263.0, "V": 174.0,
+}
 
 
 def _parse_structure(path):
@@ -39,7 +52,8 @@ def _parse_chain_ids(value, default):
 
 def _is_heavy(atom):
     element = (atom.element or "").strip().upper()
-    return element != "H" and not atom.get_name().strip().upper().startswith("H")
+    name = atom.get_name().strip().upper().lstrip("0123456789")
+    return element not in ("H", "D") and not name.startswith("H")
 
 
 def _protein_residues(chain):
@@ -52,6 +66,57 @@ def _residue_label(residue):
     from struct_analysis import _residue_label as label_residue
 
     return label_residue(residue)
+
+
+def _structural_region(rsasa):
+    if rsasa <= CORE_RSASA_CUTOFF:
+        return "CORE"
+    if rsasa < SURFACE_RSASA_CUTOFF:
+        return "BOUNDARY"
+    return "SURFACE"
+
+
+def _minimum_distance(atom_coords, other_coords):
+    """Return the exact minimum Cartesian distance between two small atom sets."""
+    import numpy as np
+
+    left = np.asarray(atom_coords, dtype=float)
+    right = np.asarray(other_coords, dtype=float)
+    delta = left[:, None, :] - right[None, :, :]
+    return float(np.sqrt(np.sum(delta * delta, axis=2)).min())
+
+
+def _sasa_by_residue(model, keep_chains):
+    """Compute residue SASA after copying the unchanged coordinates and pruning chains."""
+    from copy import deepcopy
+    from Bio.PDB.SASA import ShrakeRupley
+
+    isolated = deepcopy(model)
+    for chain in list(isolated.get_chains()):
+        if chain.id not in keep_chains:
+            isolated.detach_child(chain.id)
+    ShrakeRupley(probe_radius=SASA_PROBE_RADIUS_ANGSTROM).compute(isolated, level="R")
+    return {
+        _residue_label(residue): float(residue.sasa)
+        for chain in isolated.get_chains()
+        for residue in _protein_residues(chain)
+    }
+
+
+def _core_mutation_fraction(native_sequence, designed_sequence, binder_positions, core_positions):
+    """Measure sequence changes at CORE positions; a missing output position counts as changed."""
+    core_positions = set(core_positions)
+    if not core_positions:
+        return 0.0
+    native = str(native_sequence or "").replace(" ", "").split(":", 1)[0].upper()
+    designed = str(designed_sequence or "").replace(" ", "").split(":", 1)[0].upper()
+    indices = {label: index for index, label in enumerate(binder_positions)}
+    changed = 0
+    for label in core_positions:
+        index = indices.get(label)
+        if index is None or index >= len(native) or index >= len(designed) or native[index] != designed[index]:
+            changed += 1
+    return changed / len(core_positions)
 
 
 def _load_contact_frequencies(contact_frequencies=None, contact_frequencies_path=None):
@@ -80,7 +145,7 @@ def _load_contact_frequencies(contact_frequencies=None, contact_frequencies_path
 
 def calculate_regions(structure_path, binder_chain, target_chain=None,
                       contact_frequencies=None, contact_frequencies_path=None):
-    """Calculate deterministic binder regions using heavy-atom neighbors and per-residue SASA."""
+    """Calculate deterministic binder regions, binder-alone rSASA and complex burial."""
     if not structure_path or not os.path.isfile(structure_path):
         raise ValueError(f"structure_path not found: {structure_path}")
     model = _parse_structure(structure_path)
@@ -109,41 +174,76 @@ def calculate_regions(structure_path, binder_chain, target_chain=None,
     if not binder_atoms or not target_atoms:
         raise ValueError("binder or target chain has no heavy atoms")
 
-    # NeighborSearch mirrors struct_analysis.py. Target atoms are indexed once, then
-    # each binder atom is queried at the two task-defined cutoffs.
-    from Bio.PDB import NeighborSearch
-    target_search = NeighborSearch(target_atoms)
-    interface = set()
-    near_target = set()
-    for residue in binder_residues:
-        label = _residue_label(residue)
-        for atom in residue.get_atoms():
-            if not _is_heavy(atom):
-                continue
-            if target_search.search(atom.coord, INTERFACE_CUTOFF_ANGSTROM, level="A"):
-                interface.add(label)
-                near_target.add(label)
-            elif target_search.search(atom.coord, SHELL_CUTOFF_ANGSTROM, level="A"):
-                near_target.add(label)
+    target_coords = [atom.coord for atom in target_atoms]
+    binder_heavy_atoms = {
+        _residue_label(residue): [atom for atom in residue.get_atoms() if _is_heavy(atom)]
+        for residue in binder_residues
+    }
+    min_target_dist = {
+        label: _minimum_distance([atom.coord for atom in atoms], target_coords)
+        for label, atoms in binder_heavy_atoms.items()
+    }
+    interface_contact = {
+        label for label, distance in min_target_dist.items()
+        if distance <= INTERFACE_CUTOFF_ANGSTROM
+    }
+    target_shell = {
+        label for label, distance in min_target_dist.items()
+        if INTERFACE_CUTOFF_ANGSTROM < distance <= TARGET_SHELL_CUTOFF_ANGSTROM
+    }
 
-    # Shrake-Rupley at residue level assigns SASA to each residue in the complex.
-    from Bio.PDB.SASA import ShrakeRupley
-    ShrakeRupley().compute(model, level="R")
+    # Compare binder-alone and binder+target SASA at the same coordinates. The
+    # complex calculation deliberately keeps only the selected binder and target chains.
+    complex_sasa = _sasa_by_residue(model, {binder_chain, *target_ids})
+    binder_sasa = _sasa_by_residue(model, {binder_chain})
     core = set()
+    boundary = set()
     surface = set()
+    delta_sasa = {}
+    rsasa_by_label = {}
+    sasa_by_label = {}
+    aa_by_label = {}
     for residue in binder_residues:
         label = _residue_label(residue)
-        sasa = getattr(residue, "sasa", None)
-        if sasa is None or not math.isfinite(float(sasa)):
+        sasa = binder_sasa.get(label)
+        complex_area = complex_sasa.get(label)
+        if sasa is None or complex_area is None or not math.isfinite(sasa) or not math.isfinite(complex_area):
             raise ValueError(f"SASA unavailable for binder residue {label}")
-        (core if float(sasa) < CORE_SASA_CUTOFF_ANGSTROM2 else surface).add(label)
+        from struct_analysis import _aa1
+        aa = _aa1(residue.resname)
+        max_asa = MAX_ASA_ANGSTROM2.get(aa)
+        if max_asa is None:
+            raise ValueError(f"MaxASA unavailable for amino acid {aa!r} at {label}")
+        rsasa = sasa / max_asa
+        region = _structural_region(rsasa)
+        {"CORE": core, "BOUNDARY": boundary, "SURFACE": surface}[region].add(label)
+        sasa_by_label[label] = sasa
+        rsasa_by_label[label] = rsasa
+        aa_by_label[label] = aa
+        delta_sasa[label] = sasa - complex_area
+
+    interface_buried = {
+        label for label, delta in delta_sasa.items()
+        if delta >= INTERFACE_BURIED_CUTOFF_ANGSTROM2
+    }
+    interface = interface_contact | interface_buried
+    interface_labels = [label for label in binder_heavy_atoms if label in interface]
+    interface_atoms = [atom for label in interface_labels for atom in binder_heavy_atoms[label]]
+    structural_shell = set()
+    if interface_atoms:
+        interface_coords = [atom.coord for atom in interface_atoms]
+        for label, atoms in binder_heavy_atoms.items():
+            if label in interface:
+                continue
+            if _minimum_distance([atom.coord for atom in atoms], interface_coords) <= STRUCTURAL_SHELL_CUTOFF_ANGSTROM:
+                structural_shell.add(label)
+    shell = target_shell | structural_shell
 
     frequency_map = _load_contact_frequencies(contact_frequencies, contact_frequencies_path)
     binder_labels = [_residue_label(residue) for residue in binder_residues]
     binder_set = set(binder_labels)
     anchors = {label for label, frequency in (frequency_map or {}).items()
                if label in binder_set and frequency >= ANCHOR_FREQUENCY_CUTOFF}
-    shell = near_target - interface
     ordered = lambda values: [label for label in binder_labels if label in values]
     regions = {
         "interface": ordered(interface),
@@ -151,9 +251,37 @@ def calculate_regions(structure_path, binder_chain, target_chain=None,
         "shell": ordered(shell),
         "core": ordered(core),
         "surface": ordered(surface),
+        "boundary": ordered(boundary),
+        "target_shell": ordered(target_shell),
+        "structural_shell": ordered(structural_shell),
+        "interface_buried": ordered(interface_buried),
+        # Redesign masks use this hard-freeze set; `interface` above is the union
+        # for reporting and therefore can also include ΔSASA-only residues.
+        "interface_contact": ordered(interface_contact),
     }
+    residue_table = []
+    for residue in binder_residues:
+        label = _residue_label(residue)
+        residue_table.append({
+            "label": label,
+            "chain": binder_chain,
+            "resid": residue.id[1],
+            "insertion_code": residue.id[2].strip(),
+            "aa": aa_by_label[label],
+            "sasa": round(sasa_by_label[label], 3),
+            "rsasa": round(rsasa_by_label[label], 4),
+            "structural_region": _structural_region(rsasa_by_label[label]),
+            "min_target_dist": round(min_target_dist[label], 3),
+            "interface_contact": label in interface_contact,
+            "delta_sasa": round(delta_sasa[label], 3),
+            "interface_buried": label in interface_buried,
+            "target_shell": label in target_shell,
+            "structural_shell": label in structural_shell,
+            "anchor": label in anchors,
+        })
     return {
         "regions": regions,
+        "residue_table": residue_table,
         "binder_positions": binder_labels,
         "target_chains": target_ids,
         "counts": {name: len(labels) for name, labels in regions.items()},
@@ -195,7 +323,7 @@ def build_redesign_plan(structure_path, binder_chain, mode="interface-refine", t
         degraded = True
         degraded_reason = "no contact frequencies"
 
-    interface = set(regions["interface"])
+    interface = set(regions["interface_contact"])
     anchor = set(regions["anchor"])
     shell = set(regions["shell"])
     core = set(regions["core"])
@@ -205,8 +333,9 @@ def build_redesign_plan(structure_path, binder_chain, mode="interface-refine", t
     elif effective_mode == "anchor-preserving":
         initially_designable = all_positions - anchor
     elif effective_mode == "scaffold-rescue":
-        # Interface/core freezing wins where the disjoint geometric partitions overlap.
-        initially_designable = (shell | surface) - (interface | core)
+        # Keep hard interface contacts and explicit anchors fixed; let MPNN repair
+        # buried, boundary and exposed scaffold positions alike.
+        initially_designable = all_positions - (interface | anchor)
     else:
         initially_designable = set(all_positions)
 
@@ -247,6 +376,8 @@ def build_redesign_plan(structure_path, binder_chain, mode="interface-refine", t
         "degraded": degraded,
         "degraded_reason": degraded_reason,
         "regions": regions,
+        "residue_table": region_data["residue_table"],
+        "binder_positions": positions,
         "counts": {
             **region_data["counts"],
             "binder": len(positions),
@@ -337,6 +468,8 @@ def run_redesign(args, data_root, default_out_dir):
             compared = min(len(native), len(sequence))
             mutations = sum(native[index] != sequence[index] for index in range(compared))
             mutations += abs(len(native) - len(sequence))
+            core_mutation_fraction = _core_mutation_fraction(
+                native, sequence, plan["binder_positions"], plan["regions"]["core"])
             designs.append({
                 "design_id": item.get("id"),
                 "sequence": sequence,
@@ -344,7 +477,12 @@ def run_redesign(args, data_root, default_out_dir):
                 "temperature": temperature,
                 "n_mutations_vs_wildtype": mutations,
                 "redesigned_count": len(plan["design_positions"]),
+                "core_mutation_fraction": round(core_mutation_fraction, 4),
             })
+            if core_mutation_fraction > 0.35:
+                warnings.append(
+                    f"WARN: core_mutation_fraction={core_mutation_fraction:.4f} exceeds 0.35 for design {item.get('id')}"
+                )
 
         meta_path = os.path.join(out_dir, "redesign_meta.json")
         metadata = {
@@ -356,6 +494,7 @@ def run_redesign(args, data_root, default_out_dir):
             "degraded": plan["degraded"],
             "degraded_reason": plan["degraded_reason"],
             "regions": plan["regions"],
+            "residue_table": plan["residue_table"],
             "counts": plan["counts"],
             "fixed_positions": plan["fixed_positions"],
             "design_positions": plan["design_positions"],
@@ -372,7 +511,7 @@ def run_redesign(args, data_root, default_out_dir):
         return {
             "ok": True,
             **{key: plan[key] for key in (
-                "mode", "requested_mode", "degraded", "degraded_reason", "regions", "counts")},
+                "mode", "requested_mode", "degraded", "degraded_reason", "regions", "residue_table", "counts")},
             "fixed_positions": plan["fixed_positions"],
             "design_positions": plan["design_positions"],
             "warnings": warnings,
