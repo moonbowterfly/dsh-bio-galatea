@@ -88,6 +88,9 @@ export const TOOLS_MANIFEST = [
   { name: 'galatea_portfolio', capability: 'galatea.design.portfolio', category: 'design',
     cost_class: 'medium', network: 'none', mutability: 'writes_output', status: 'ready',
     summary: '约束优先的确定性候选组合选择：资格过滤、靶点覆盖 floor、全局竞争与四件套审计输出' },
+  { name: 'galatea_budget', capability: 'galatea.design.budget', category: 'design',
+    cost_class: 'medium', network: 'none', mutability: 'writes_output', status: 'ready',
+    summary: '跨靶预算调度：三层整数池、pilot shrinkage exploitation、q=N/T 密度门、cap feasibility 与仅产出的 portfolio handoff' },
 ]
 
 export const CONTRACT_VERSION = '1'

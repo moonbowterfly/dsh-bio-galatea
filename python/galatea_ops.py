@@ -29,6 +29,7 @@ op 一览（v0.1）：
   redesign        区域约束式 binder 序列重设计（MPNN）
   refold          binder 单体复折叠救援检查（ESMFold）
   portfolio       约束优先的确定性候选组合选择（不读取实验标签）
+  budget          跨靶三层预算调度（只输出 portfolio handoff，不读取实验标签）
 """
 import json
 import os
@@ -283,6 +284,15 @@ def op_portfolio(args):
     return run_portfolio(args)
 
 
+# ---------------------------------------------------------------------------
+# op: budget — deterministic cross-target budget scheduler
+# ---------------------------------------------------------------------------
+def op_budget(args):
+    sys.dont_write_bytecode = True
+    from budget_tools import run_budget
+    return run_budget(args)
+
+
 OPS = {
     "status": op_status,
     "setup": op_setup,
@@ -301,6 +311,7 @@ OPS = {
     "redesign": op_redesign,
     "refold": op_refold,
     "portfolio": op_portfolio,
+    "budget": op_budget,
 }
 
 

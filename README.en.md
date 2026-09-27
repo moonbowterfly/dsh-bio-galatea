@@ -11,7 +11,7 @@
 
 A standard protein-design pipeline (binders / enzymes / nanobodies) is scattered across a dozen
 tools: ProteinMPNN for sequences, ESMFold for fold validation, interface analysis for binding
-screening, clustering for candidate selection. This plugin gathers them into **17 semantic tools**
+screening, clustering for candidate selection. This plugin gathers them into **18 semantic tools**
 that agents in dsh (and the genie host) can call directly — with **explicit local boundaries**
 (heavy co-folding is honestly redirected to external services instead of pretending capability).
 
@@ -30,9 +30,10 @@ that agents in dsh (and the genie host) can call directly — with **explicit lo
    Contact consensus: galatea_contact_consensus # multi-model contact frequencies and anchors
    Contact clusters: galatea_contact_cluster    # target footprint Jaccard + frequency cosine, single-link
    Portfolio:       galatea_portfolio            # coverage floors, global caps and auditable outputs
+   Cross-target budget: galatea_budget            # floor / exploit / reserve quotas per target
 ```
 
-## The 17 tools
+## The 18 tools
 
 | Tool | Purpose | Typical time |
 |---|---|---|
@@ -53,6 +54,13 @@ that agents in dsh (and the genie host) can call directly — with **explicit lo
 | `galatea_refold` | ESMFold monomer refold metrics including the Cα fraction within 2 Å (F2Å) | CPU minutes |
 | `galatea_ingest` | Ingest local PDB/CIF, CSV/JSON/JSONL, or inline candidates into a conflict-aware JSONL ledger | seconds–minutes |
 | `galatea_portfolio` | Deterministic selection under target coverage, diversity caps and risk limits | seconds–minutes |
+| `galatea_budget` | Cross-target budget allocation with three tiers, pilot shrinkage, density and cap feasibility checks | seconds |
+
+## Cross-target budget scheduling (`galatea_budget`)
+
+Provide a target summary table (CSV/JSONL/JSON; required `target_id`; optional `n_eligible`, `n_backbones`, `n_contact_clusters`, `pilot_attempts`, `pilot_passes`, and `uncertainty`), a config with required `total_budget`, and an output directory. The scheduler builds integer coverage-floor, designability-exploit (weight `sqrt((pilot_passes+1)/(pilot_attempts+2))`), and hard/uncertain-reserve pools from a preset or explicit shares. If `N<T`, the top shrinkage targets receive one slot each. Missing optional fields produce warnings and reduce the corresponding feasibility reporting.
+
+The default `balanced` preset uses 20/65/15; `global-best-affinity`, `multi-target-aggregate`, and `per-target-coverage-heavy` use 15/70/15, 30/55/15, and 45/40/15. A contact cap is effective only when `q=N/T≤5`, the preset is not `global-best-affinity`, and `portfolio_v1_validated=true`. Infeasible caps receive an explicit relaxation recommendation and `CAP_RELAXED_INFEASIBLE`; quotas above the eligible pool receive `QUOTA_EXCEEDS_POOL` and are never silently reduced. The four outputs are `budget_allocation.csv`, `budget_summary.json`, `budget_manifest.json`, and `portfolio_handoff.json`; allocation rows sort by `target_id`, while `flags` and `reason_codes` use JSON-array CSV cells. This version only emits the handoff and does not connect it to portfolio or loop. No wet-lab labels are read or used.
 
 ## Constraint-first portfolios (`galatea_portfolio`)
 

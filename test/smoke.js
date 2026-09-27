@@ -64,6 +64,29 @@ function runOp(op, args, timeoutMs = 180000) {
   })
 }
 
+function runOpWithHashSeed(op, args, seed, timeoutMs = 180000) {
+  return new Promise((resolve) => {
+    // Deliberately omit -I here so Python honors different PYTHONHASHSEED values.
+    const cp = spawn(PY, ['-B', join(PYDIR, 'galatea_ops.py')], {
+      cwd: PYDIR, windowsHide: true,
+      env: { ...process.env, PYTHONHASHSEED: String(seed) },
+    })
+    let out = ''
+    let err = ''
+    const timer = setTimeout(() => { try { cp.kill() } catch {} }, timeoutMs)
+    cp.stdout.on('data', (d) => { out += d })
+    cp.stderr.on('data', (d) => { err += d })
+    cp.on('close', (code) => {
+      clearTimeout(timer)
+      let json = null
+      try { json = JSON.parse(out.trim().split('\n').pop()) } catch {}
+      resolve({ code, out, err, json })
+    })
+    cp.stdin.write(JSON.stringify({ op, args }))
+    cp.stdin.end()
+  })
+}
+
 function runPythonSnippet(source, timeoutMs = 180000) {
   return new Promise((resolve) => {
     const cp = spawn(PY, ['-B', '-I', '-c', source], { cwd: PYDIR, windowsHide: true })
@@ -1500,6 +1523,218 @@ console.log('G6 portfolio')
       const name = label === 'empty table' ? 'bad-empty' : label === 'missing design_id column' ? 'bad-id-column' : label === 'duplicate design_id' ? 'bad-duplicate' : 'bad-rankable'
       const r = await runOp('portfolio', { candidates: join(temp, `${name}.csv`), out: join(temp, `${name}-out`), config: defaultConfig })
       check(`portfolio: ${label} returns structured ok:false`, r.code === 0 && r.json?.ok === false && typeof r.json?.error === 'string')
+    }
+  } finally {
+    rmSync(temp, { recursive: true, force: true })
+  }
+}
+
+// G7 budget v0: cross-target integer allocation, feasibility and deterministic artifacts.
+console.log('G7 budget')
+{
+  const temp = mkdtempSync(join(tmpdir(), 'galatea-budget-smoke-'))
+  const headers = ['target_id', 'pilot_attempts', 'pilot_passes', 'n_eligible', 'n_backbones', 'n_contact_clusters', 'uncertainty']
+  const cell = (value) => {
+    if (value === null || value === undefined) return ''
+    const text = String(value)
+    return /[",\r\n]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text
+  }
+  function writeTargets(name, rows, extraFields = []) {
+    const fields = [...new Set([...headers, ...extraFields, ...rows.flatMap((row) => Object.keys(row))])]
+    const content = [fields.join(','), ...rows.map((row) => fields.map((field) => cell(row[field])).join(','))].join('\n') + '\n'
+    const path = join(temp, `${name}.csv`)
+    writeFileSync(path, content, 'utf8')
+    return path
+  }
+  async function budget(name, rows, config, extraFields = []) {
+    const targets = writeTargets(name, rows, extraFields)
+    const out = join(temp, `${name}-out`)
+    const result = await runOp('budget', { targets, config, out })
+    return { ...result, targets, out }
+  }
+  const readSummary = (out) => JSON.parse(readFileSync(join(out, 'budget_summary.json'), 'utf8'))
+  const parseCsv = (text) => {
+    const lines = text.trimEnd().split('\n')
+    const parseLine = (line) => {
+      const cells = []
+      let value = ''
+      let quoted = false
+      for (let i = 0; i < line.length; i++) {
+        const char = line[i]
+        if (quoted) {
+          if (char === '"' && line[i + 1] === '"') { value += '"'; i++ }
+          else if (char === '"') quoted = false
+          else value += char
+        } else if (char === '"') quoted = true
+        else if (char === ',') { cells.push(value); value = '' }
+        else value += char
+      }
+      cells.push(value)
+      return cells
+    }
+    const fields = parseLine(lines[0])
+    return lines.slice(1).map((line) => Object.fromEntries(parseLine(line).map((value, index) => [fields[index], value])))
+  }
+  const files = ['budget_allocation.csv', 'budget_summary.json', 'budget_manifest.json', 'portfolio_handoff.json']
+
+  try {
+    const fixtureRows = [
+      { target_id: 't1', pilot_attempts: 24, pilot_passes: 20, n_eligible: 50 },
+      { target_id: 't2', pilot_attempts: 24, pilot_passes: 12, n_eligible: 40 },
+      { target_id: 't3', pilot_attempts: 24, pilot_passes: 6, n_eligible: 45 },
+      { target_id: 't4', pilot_attempts: 24, pilot_passes: 2, n_eligible: 30, n_backbones: 6 },
+      { target_id: 't5', pilot_attempts: 12, pilot_passes: 0, n_eligible: 12 },
+    ]
+    const fixture = await budget('manual-fixture', fixtureRows, { total_budget: 100, preset: 'balanced' })
+    const manual = fixture.json?.result?.summary
+    const allocationRows = fixture.json?.ok === true
+      ? parseCsv(readFileSync(join(fixture.out, 'budget_allocation.csv'), 'utf8'))
+      : []
+    const byId = Object.fromEntries(allocationRows.map((row) => [row.target_id, row]))
+    const roundedRates = Object.fromEntries(allocationRows.map((row) => [row.target_id, Number(Number(row.r_tilde).toFixed(10))]))
+    check('budget: manual fixture reproduces r_tilde to 10 decimals', JSON.stringify(roundedRates) ===
+      JSON.stringify({ t1: 0.8076923077, t2: 0.5, t3: 0.2692307692, t4: 0.1153846154, t5: 0.0714285714 }))
+    check('budget: manual fixture pools and each tier quota match hand calculation',
+      manual?.tiers?.floor_pool === 20 && manual?.tiers?.exploit_pool === 65 && manual?.tiers?.reserve_pool === 15 &&
+      JSON.stringify(Object.fromEntries(allocationRows.map((row) => [row.target_id, Number(row.floor_q)]))) ===
+        JSON.stringify({ t1: 4, t2: 4, t3: 4, t4: 4, t5: 4 }) &&
+      JSON.stringify(Object.fromEntries(allocationRows.map((row) => [row.target_id, Number(row.exploit_q)]))) ===
+        JSON.stringify({ t1: 22, t2: 17, t3: 12, t4: 8, t5: 6 }) &&
+      JSON.stringify(Object.fromEntries(allocationRows.map((row) => [row.target_id, Number(row.reserve_q)]))) ===
+        JSON.stringify({ t1: 0, t2: 0, t3: 5, t4: 5, t5: 5 }))
+    check('budget: manual fixture K_t is {26,21,21,17,15}, sum=100 and classes match',
+      JSON.stringify(manual?.allocation?.per_target) === JSON.stringify({ t1: 26, t2: 21, t3: 21, t4: 17, t5: 15 }) &&
+      Object.values(manual?.allocation?.per_target || {}).reduce((sum, quota) => sum + quota, 0) === 100 &&
+      JSON.stringify(manual?.classes) === JSON.stringify({ soft: ['t1', 't2'], uncertain: ['t3'], hard: ['t4', 't5'] }))
+    check('budget: t4 backbone cap relaxes to 3 and t5 reports pool overflow',
+      manual?.feasibility?.bb_cap?.per_target?.t4?.cap === 3 &&
+      manual?.feasibility?.bb_cap?.per_target?.t4?.reason === 'CAP_RELAXED_INFEASIBLE' &&
+      byId.t5?.flags === '["QUOTA_EXCEEDS_POOL"]' && manual?.achievable_total === 97)
+    check('budget: q=20 closes contact-cap gate; target rows are sorted by target_id',
+      manual?.totals?.q_density === 20 && manual?.feasibility?.contact_cap?.would_enable === false &&
+      allocationRows.map((row) => row.target_id).join(',') === 't1,t2,t3,t4,t5')
+
+    const presetExpected = [
+      ['global-best-affinity', 15],
+      ['multi-target-aggregate', 30],
+      ['per-target-coverage-heavy', 45],
+    ]
+    for (const [preset, expectedFloor] of presetExpected) {
+      const result = await budget(`preset-${preset}`, fixtureRows, { total_budget: 100, preset })
+      const summary = result.json?.result?.summary
+      check(`budget: ${preset} floor pool=${expectedFloor} and quotas still sum to 100`,
+        summary?.tiers?.floor_pool === expectedFloor &&
+        Object.values(summary?.allocation?.per_target || {}).reduce((sum, quota) => sum + quota, 0) === 100)
+    }
+
+    const contactRows = Array.from({ length: 15 }, (_, index) => ({
+      target_id: `T${String(index + 1).padStart(2, '0')}`,
+      n_eligible: 100, n_backbones: 100, n_contact_clusters: 100,
+      pilot_attempts: 0, pilot_passes: 0,
+    }))
+    const gated = await budget('contact-would', contactRows, { total_budget: 60 })
+    const effective = await budget('contact-effective', contactRows, { total_budget: 60, portfolio_v1_validated: true })
+    const affinity = await budget('contact-affinity', contactRows, {
+      total_budget: 60, preset: 'global-best-affinity', portfolio_v1_validated: true,
+    })
+    const contactRelaxRows = contactRows.map((row) => ({ ...row, n_contact_clusters: 2 }))
+    const contactRelax = await budget('contact-relax', contactRelaxRows, { total_budget: 60 })
+    check('budget: contact gate opens at q=4, effective waits for portfolio-v1 validation',
+      gated.json?.result?.summary?.totals?.q_density === 4 &&
+      gated.json?.result?.summary?.feasibility?.contact_cap?.would_enable === true &&
+      gated.json?.result?.summary?.feasibility?.contact_cap?.effective === false &&
+      effective.json?.result?.summary?.feasibility?.contact_cap?.effective === true)
+    check('budget: affinity preset closes contact gate and infeasible contact clusters recommend cap=2',
+      affinity.json?.result?.summary?.feasibility?.contact_cap?.would_enable === false &&
+      Object.values(contactRelax.json?.result?.summary?.feasibility?.contact_cap?.feasibility?.per_target || {}).some((item) =>
+        item.feasible === false && item.cap_recommended === 2 && item.reason === 'CAP_RELAXED_INFEASIBLE'))
+
+    const allSoftRows = [
+      { target_id: 'A', pilot_attempts: 24, pilot_passes: 20 },
+      { target_id: 'B', pilot_attempts: 24, pilot_passes: 19 },
+      { target_id: 'C', pilot_attempts: 24, pilot_passes: 18 },
+    ]
+    const softFallback = await budget('reserve-fallback', allSoftRows, {
+      total_budget: 30, class_rule: 'absolute', soft_threshold: 0.7, hard_threshold: 0.2,
+    })
+    check('budget: all-soft reserve falls back to weighted allocation and flags use',
+      softFallback.json?.result?.summary?.classes?.hard?.length === 0 &&
+      softFallback.json?.result?.summary?.reserve?.fallback_used === true &&
+      softFallback.json?.result?.summary?.flags?.includes('RESERVE_FALLBACK_USED'))
+
+    const noPilotRows = ['A', 'B', 'C'].map((target_id) => ({ target_id, pilot_attempts: 0, pilot_passes: 0 }))
+    const noPilot = await budget('no-pilot', noPilotRows, { total_budget: 30 })
+    const noPilotAllocation = parseCsv(readFileSync(join(noPilot.out, 'budget_allocation.csv'), 'utf8'))
+    check('budget: no-pilot targets have r_tilde=0.5, all uncertain, and share reserve evenly',
+      noPilot.json?.result?.summary?.classes?.uncertain?.length === 3 &&
+      noPilot.json?.result?.summary?.reserve?.eligible?.length === 3 &&
+      noPilotAllocation.every((row) => Number(row.r_tilde) === 0.5) &&
+      JSON.stringify(Object.fromEntries(noPilotAllocation.map((row) => [row.target_id, Number(row.reserve_q)]))) ===
+        JSON.stringify({ A: 2, B: 2, C: 1 }))
+
+    const underRows = [
+      { target_id: 'A', pilot_attempts: 2, pilot_passes: 2 },
+      { target_id: 'B', pilot_attempts: 2, pilot_passes: 1 },
+      { target_id: 'C', pilot_attempts: 2, pilot_passes: 0 },
+    ]
+    const under = await budget('below-target-count', underRows, { total_budget: 2 })
+    check('budget: N<T assigns one each to the top N and flags uncovered targets',
+      under.json?.result?.summary?.flags?.includes('BUDGET_BELOW_TARGET_COUNT') &&
+      JSON.stringify(under.json?.result?.summary?.allocation?.per_target) === JSON.stringify({ A: 1, B: 1, C: 0 }))
+
+    const absolute = await budget('absolute-classes', [
+      { target_id: 'soft', pilot_attempts: 24, pilot_passes: 20 },
+      { target_id: 'middle', pilot_attempts: 0, pilot_passes: 0 },
+      { target_id: 'hard', pilot_attempts: 24, pilot_passes: 0 },
+    ], { total_budget: 30, class_rule: 'absolute', soft_threshold: 0.7, hard_threshold: 0.2 })
+    check('budget: absolute thresholds classify against r_tilde',
+      JSON.stringify(absolute.json?.result?.summary?.classes) ===
+        JSON.stringify({ soft: ['soft'], uncertain: ['middle'], hard: ['hard'] }))
+
+    const minimalTargets = join(temp, 'minimal-with-unrecognized-label.csv')
+    writeFileSync(minimalTargets, 'target_id,wet_lab_label\nT1,DO_NOT_READ_OR_USE\n', 'utf8')
+    const minimalOut = join(temp, 'minimal-with-unrecognized-label-out')
+    const minimal = await runOp('budget', { targets: minimalTargets, config: { total_budget: 1 }, out: minimalOut })
+    check('budget: missing optional target fields warn but do not fail; unknown wet-label column is absent from outputs',
+      minimal.json?.ok === true &&
+      minimal.json?.result?.summary?.warnings?.some((warning) => warning.includes('n_eligible')) &&
+      !files.some((file) => readFileSync(join(minimalOut, file), 'utf8').includes('DO_NOT_READ_OR_USE')))
+
+    const customShares = await budget('custom-shares', fixtureRows, {
+      total_budget: 100, floor_fraction: 0.20000000001,
+      exploit_fraction: 0.65, reserve_fraction: 0.14999999989,
+    })
+    const effectiveShares = customShares.json?.result?.summary?.config
+    check('budget: explicit shares within 1e-9 are accepted and normalized to one',
+      customShares.json?.ok === true && Math.abs(
+        effectiveShares.floor_fraction + effectiveShares.exploit_fraction + effectiveShares.reserve_fraction - 1,
+      ) < 1e-12)
+
+    const deterministicTargets = writeTargets('deterministic-input', fixtureRows)
+    const deterministicArgs1 = { targets: deterministicTargets, config: { total_budget: 100 }, out: join(temp, 'seed-17') }
+    const deterministicArgs2 = { targets: deterministicTargets, config: { total_budget: 100 }, out: join(temp, 'seed-991') }
+    const [deterministic1, deterministic2] = await Promise.all([
+      runOpWithHashSeed('budget', deterministicArgs1, 17),
+      runOpWithHashSeed('budget', deterministicArgs2, 991),
+    ])
+    check('budget: four output artifacts are byte-identical across processes and hash seeds',
+      deterministic1.json?.ok === true && deterministic2.json?.ok === true && files.every((file) =>
+        readFileSync(join(deterministicArgs1.out, file)).equals(readFileSync(join(deterministicArgs2.out, file)))))
+
+    const missingTargetColumn = join(temp, 'bad-target-column.csv')
+    writeFileSync(missingTargetColumn, 'other_id\nT1\n', 'utf8')
+    const badCases = [
+      ['missing target_id column', missingTargetColumn, { total_budget: 5 }],
+      ['duplicate target_id', writeTargets('bad-target-duplicate', [{ target_id: 'same' }, { target_id: 'same' }]), { total_budget: 5 }],
+      ['missing total_budget', writeTargets('bad-budget-missing', [{ target_id: 'T1' }]), {}],
+      ['non-positive total_budget', writeTargets('bad-budget-zero', [{ target_id: 'T1' }]), { total_budget: 0 }],
+      ['illegal preset', writeTargets('bad-preset', [{ target_id: 'T1' }]), { total_budget: 1, preset: 'unknown' }],
+      ['partial explicit shares', writeTargets('bad-shares', [{ target_id: 'T1' }]), { total_budget: 1, floor_fraction: 0.2 }],
+    ]
+    for (const [label, targets, config] of badCases) {
+      const result = await runOp('budget', { targets, config, out: join(temp, `bad-${label}`) })
+      check(`budget: ${label} returns structured ok:false`, result.code === 0 &&
+        result.json?.ok === false && result.json?.reason_code === 'INVALID_INPUT' && typeof result.json?.error === 'string')
     }
   } finally {
     rmSync(temp, { recursive: true, force: true })

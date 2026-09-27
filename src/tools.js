@@ -1,6 +1,6 @@
-// dsh-bio-galatea — 工具层（defineTool 注册，17 语义化工具，v0.1）
+// dsh-bio-galatea — 工具层（defineTool 注册，18 语义化工具，v0.1）
 // 全部执行走 python/galatea_ops.py（JSON stdin 协议）。
-// op 与工具对照（1:1）：status/setup/mpnn/fold/interface/score/inspect/cluster/loop/redesign/refold/ingest/portfolio（同名）；rank.consensus→galatea_rank；rank.aggregate→galatea_rank_aggregate。
+// op 与工具对照（1:1）：status/setup/mpnn/fold/interface/score/inspect/cluster/loop/redesign/refold/ingest/portfolio/budget（同名）；rank.consensus→galatea_rank；rank.aggregate→galatea_rank_aggregate。
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { isAbsolute } from 'node:path'
 import { callGalatea } from './python.js'
@@ -468,6 +468,30 @@ export function registerTools(ctx) {
       additionalProperties: true,
     },
     op: 'portfolio',
+    timeoutMs: 120_000,
+  })))
+
+  // galatea_budget: deterministic cross-target campaign allocation
+  disposers.push(ctx.tools.register(galateaTool({
+    name: 'galatea_budget',
+    description:
+      '跨靶总预算调度器：按 coverage floor、designability exploit 与 hard/uncertain reserve 三层给每个 target 分配整数配额；使用 pilot shrinkage 权重和 preset，报告 q=N/T 密度门、逐靶 cap feasibility 与不可行放宽建议。' +
+      '输入 target CSV/JSONL/JSON、含 total_budget 的内联 config 或 JSON 配置路径及输出目录，生成 allocation/summary/manifest 和 portfolio_handoff 四件套；handoff 仅产出，不接入 portfolio 或 loop 消费。工具不读取湿实验标签、不访问网络。' +
+      '触发词：预算、配额、跨靶、分钱、budget、quota、allocation、scheduler、preset、density。',
+    parameters: {
+      targets: { type: 'string', required: true, description: '靶点汇总 CSV、JSONL 或 JSON 数组路径，只提供 G7 所需统计字段' },
+      config: {
+        oneOf: [
+          { type: 'object', additionalProperties: true },
+          { type: 'string' },
+        ],
+        required: true,
+        description: '含必填 total_budget 的内联配置对象或 JSON 配置文件路径；preset 缺省 balanced',
+      },
+      out: { type: 'string', required: true, description: '四件套输出目录路径' },
+      additionalProperties: true,
+    },
+    op: 'budget',
     timeoutMs: 120_000,
   })))
 

@@ -8,7 +8,7 @@
 ## 它解决什么问题
 
 蛋白质设计（binder / 酶 / 纳米抗体）的标准流程散布在十几个工具里：设计序列要 ProteinMPNN、
-验证折叠要 ESMFold、筛选结合要界面分析、选候选要聚类。本插件把它们收拢为 **17 个语义化工具**，
+验证折叠要 ESMFold、筛选结合要界面分析、选候选要聚类。本插件把它们收拢为 **18 个语义化工具**，
 让 dsh 里的 agent（及 genie 宿主）直接调用——并**明确标注本机边界**（co-folding 等重算力环节
 诚实指向外部服务，不伪装能力）。
 
@@ -28,11 +28,12 @@
    接触共识： galatea_contact_consensus             # 多模型界面频率、pair 和 anchor（不做排序）
    接触聚类： galatea_contact_cluster               # target footprint Jaccard + 频率向量 cosine 单链接
    组合选择： galatea_portfolio                     # 覆盖 floor、全局配额与风险约束；输出可审计四件套
+   跨靶预算： galatea_budget                        # floor / exploit / reserve 三层给每个 target 分配整数配额
    区域重设计： galatea_redesign                     # 按界面/anchor/骨架区域约束 MPNN
    复折叠救援： galatea_refold                       # 离开 target 后检查 binder 单体折叠
 ```
 
-## 17 个工具一览
+## 18 个工具一览
 
 | 工具 | 用途 | 典型耗时 |
 |---|---|---|
@@ -53,6 +54,13 @@
 | `galatea_refold` | ESMFold 单体复折叠；序列对齐 Cα RMSD、F2Å、pLDDT 与二级结构一致性 | CPU 分钟级 |
 | `galatea_ingest` | 摄入本地 PDB/CIF、CSV/JSON/JSONL 或内联候选，按冲突策略写入统一 JSONL 台账 | 秒-分钟级 |
 | `galatea_portfolio` | 按资格、靶点覆盖、多样性配额与风险上限确定性选择候选组合 | 秒-分钟级 |
+| `galatea_budget` | 跨靶预算调度：三层配额、pilot shrinkage、密度门与 cap feasibility；handoff 仅产出 | 秒级 |
+
+## 跨靶预算调度（`galatea_budget`）
+
+输入 target 汇总表（CSV/JSONL/JSON，必填 `target_id`；可选 `n_eligible`、`n_backbones`、`n_contact_clusters`、`pilot_attempts`、`pilot_passes`、`uncertainty`）、含 `total_budget` 的 config 和输出目录。工具按 preset 或显式份额建立 coverage floor、designability exploit（权重 `sqrt((pilot_passes+1)/(pilot_attempts+2))`）与 hard/uncertain reserve 三层整数池；当 `N<T` 时对最高 shrinkage 靶各分配一个名额。缺失的可选字段会告警并降低对应可行性报告能力。
+
+默认 preset 为 `balanced`（20/65/15）；另有 `global-best-affinity`（15/70/15）、`multi-target-aggregate`（30/55/15）和 `per-target-coverage-heavy`（45/40/15）。contact-cap 只有 `q=N/T≤5`、非 `global-best-affinity` 且 `portfolio_v1_validated=true` 时才会生效；cap 不可行时明确建议放宽并记录 `CAP_RELAXED_INFEASIBLE`，配额超过可用池时记录 `QUOTA_EXCEEDS_POOL`，不会静默少交。输出 `budget_allocation.csv`、`budget_summary.json`、`budget_manifest.json` 和 `portfolio_handoff.json`；allocation 按 `target_id` 升序，`flags` 与 `reason_codes` 使用 JSON 数组字符串；handoff 本批仅产出，不由 portfolio 或 loop 消费。输入和输出均不包含湿实验标签。
 
 ## 候选组合选择（`galatea_portfolio`）
 
