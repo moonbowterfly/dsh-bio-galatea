@@ -24,7 +24,7 @@
 | 文件 | 职责 |
 |---|---|
 | `index.js` | 主模块：`inject=['tools','skills']`（仅必选）；`webServer` 走 apply 内动态注入（非 web 部署时工具照常注册） |
-| `tools.js` | 18 语义化工具（`defineTool`）；**parameters/schema 是 agent 可见能力的唯一真相** |
+| `tools.js` | 19 语义化工具（`defineTool`）；**parameters/schema 是 agent 可见能力的唯一真相** |
 | `capabilities.js` | `TOOLS_MANIFEST` 单源（工具清单 + cost_class/network/mutability 元数据），供 integration 与宿主消费 |
 | `integration.js` | hosted-domain 集成协议 v1：`/health`、`/v1/status`、`/v1/capabilities`（loopback-only 三层守卫） |
 | `python.js` | 解释器解析链 + `callGalatea`（JSON stdin 协议）+ `stampProvenance` |
@@ -34,7 +34,8 @@
 
 | 文件 | 职责 |
 |---|---|
-| `galatea_ops.py` | 协议分发器（18 op）；三流 UTF-8；`_sanitize_json`；异常契约（结构化业务错误 + stderr Traceback 头） |
+| `galatea_ops.py` | 协议分发器（19 op）；三流 UTF-8；`_sanitize_json`；异常契约（结构化业务错误 + stderr Traceback 头） |
+| `coverage_tools.py` | Campaign 覆盖审计与确定性 rescue 计划；只读取候选维度，不读取实验标签、不接入 loop/portfolio |
 | `budget_tools.py` | 跨靶三层整数预算调度、pilot shrinkage 分类、cap feasibility 与原子化 handoff 四件套；不消费实验标签 |
 | `components.py` | 组件探测（status）+ 零手动自举（setup：env / mpnn / esmfold，幂等） |
 | `mpnn_design.py` | MPNN 包装：spawn vendor LigandMPNN `run.py` + 输出解析（seqs/*.fa） |
@@ -71,7 +72,7 @@
 
 选择标准 = `import torch` 成功（进程内缓存；`setup` 成功后自动失效重探）。
 
-## 4. 工具 / op 对照（18 工具 = 18 op）
+## 4. 工具 / op 对照（19 工具 = 19 op）
 
 | 工具 | op | capability | 说明 |
 |---|---|---|---|
@@ -93,6 +94,7 @@
 | `galatea_ingest` | ingest | design | 摄入本地多源候选并写入统一 JSONL 台账；以 target_id + design_id 标识记录、结构带哈希与 role、分数 schema 写 sidecar、只解析显式 parent_id |
 | `galatea_portfolio` | portfolio | design | 资格过滤 → 靶点覆盖 floor → 共识百分位全局竞争；约束配置化并输出 selected/rejected/summary/manifest |
 | `galatea_budget` | budget | design | 跨靶 floor/exploit/reserve 整数配额、密度门与 cap feasibility；输出 handoff，不接消费 |
+| `galatea_coverage` | coverage | design | Campaign 覆盖审计：generator/contact/backbone family、未消费 generator 与 quota；可输出确定性 rescue 计划 |
 
 ## 5. 集成协议（宿主消费，v1 只读）
 

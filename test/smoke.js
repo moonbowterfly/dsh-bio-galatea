@@ -1529,6 +1529,220 @@ console.log('G6 portfolio')
   }
 }
 
+// G8-lite coverage v0: hand-calculated coverage snapshots and rescue plan.
+console.log('G8-lite coverage')
+{
+  const temp = mkdtempSync(join(tmpdir(), 'galatea-coverage-smoke-'))
+  const candidates = join(temp, 'manual-candidates.csv')
+  const selection = join(temp, 'selection.json')
+  const quota = join(temp, 'quota.json')
+  const out = join(temp, 'rescue-out')
+  const rows = [
+    ['T1', 'd1', 'G1', 'B1', 'F1', '0.90'],
+    ['T1', 'd2', 'G1', 'B2', 'F1', '0.80'],
+    ['T1', 'd3', 'G2', 'B3', 'F2', '0.70'],
+    ['T1', 'd4', 'G2', 'B4', 'F2', '0.60'],
+    ['T2', 'd5', 'G1', 'B1', 'F1', '0.50'],
+    ['T2', 'd6', 'G1', 'B1', 'F1', '0.40'],
+    ['T4', 'd7', 'G1', 'B1', 'F1', '0.90'],
+    ['T4', 'd8', 'G1', 'B2', 'F1', '0.80'],
+    ['T4', 'd9', 'G1', 'B3', 'F1', '0.70'],
+    ['T4', 'd10', 'G2', 'B4', 'F2', '0.10'],
+    ['T5', 'e1', 'G1', 'B1', 'F1', '0.90'],
+    ['T5', 'e2', 'G1', 'B2', 'F1', '0.80'],
+    ['T5', 'e3', 'G2', 'B3', 'F2', '0.70'],
+    ['T5', 'e4', 'G2', 'B4', 'F2', '0.60'],
+  ]
+  writeFileSync(candidates, [
+    'target_id,design_id,generator,backbone_id,contact_cluster_id,consensus_score,wet_label',
+    ...rows.map((row) => row.join(',') + ',DO_NOT_READ_OR_USE'),
+  ].join('\n') + '\n', 'utf8')
+  writeFileSync(selection, JSON.stringify(['d1', 'd2', 'd3', 'd5', 'd7', 'd8', 'e1', 'e2', 'x1']), 'utf8')
+  writeFileSync(quota, JSON.stringify({ T1: 3, T2: 2, T3: 1, T4: 2, T5: 2 }), 'utf8')
+  const config = { out, rescue: true }
+  const files = [
+    'coverage_audit.csv', 'coverage_summary.json', 'coverage_manifest.json',
+    'rescue_plan.json', 'rescue_plan.csv',
+  ]
+  try {
+    const args = { candidates, selection, quota, config }
+    const result = await runOp('coverage', args)
+    check('coverage: manual T1-T5 fixture completes', result.json?.ok === true, JSON.stringify(result.json))
+    const audit = readFileSync(join(out, 'coverage_audit.csv'), 'utf8')
+    const summary = JSON.parse(readFileSync(join(out, 'coverage_summary.json'), 'utf8'))
+    const rescue = JSON.parse(readFileSync(join(out, 'rescue_plan.json'), 'utf8'))
+    const manifest = JSON.parse(readFileSync(join(out, 'coverage_manifest.json'), 'utf8'))
+    check('coverage: unknown selection ID and unconsumed-generator detail',
+      JSON.stringify(summary.selection_unknown_ids) === JSON.stringify(['x1']) &&
+      JSON.stringify(summary.unconsumed_generators) === JSON.stringify([['T5', 'G2', 2, 0.5]]))
+    check('coverage: rescue adds d6 and replaces d8→d10 / e2→e3',
+      JSON.stringify(rescue.actions.map((action) => [
+        action.action, action.target_id, action.add_design_id,
+        action.replace_design_id, action.reason_code,
+      ])) === JSON.stringify([
+        ['ADD', 'T2', 'd6', null, 'QUOTA_UNDERFILLED'],
+        ['REPLACE', 'T4', 'd10', 'd8', 'SINGLE_CONTACT_FAMILY'],
+        ['REPLACE', 'T5', 'e3', 'e2', 'SINGLE_CONTACT_FAMILY'],
+      ]) &&
+      JSON.stringify(rescue.counts) === JSON.stringify({ add: 1, replace: 2, unresolvable: 3 }))
+    check('coverage: audit includes all five targets and excludes label values',
+      ['T1', 'T2', 'T3', 'T4', 'T5'].every((target) => audit.includes(target + ',')) &&
+      files.every((file) => !readFileSync(join(out, file), 'utf8').includes('DO_NOT_READ_OR_USE')))
+    check('coverage: manifest hashes every emitted non-manifest artifact',
+      Object.entries(manifest.outputs).length === 4 &&
+      Object.entries(manifest.outputs).every(([file, hash]) =>
+        createHash('sha256').update(readFileSync(join(out, file))).digest('hex') === hash))
+
+    const auditLines = audit.trimEnd().split('\n').map((line) => line.split(','))
+    const auditFields = auditLines[0]
+    const auditByTarget = Object.fromEntries(auditLines.slice(1).map((values) => [
+      values[0], Object.fromEntries(auditFields.map((field, index) => [field, values[index]])),
+    ]))
+    const expectedAudit = {
+      T1: ['4', '3', '3', '2', '4', '2', '2', '3', '2', ''],
+      T2: ['2', '1', '2', '1', '1', '1', '1', '1', '1', 'QUOTA_UNDERFILLED'],
+      T3: ['0', '0', '1', '0', '0', '0', '0', '0', '0', 'QUOTA_UNDERFILLED;ZERO_CANDIDATES'],
+      T4: ['4', '2', '2', '2', '4', '2', '1', '2', '1', 'SINGLE_CONTACT_FAMILY;SINGLE_GENERATOR'],
+      T5: ['4', '2', '2', '2', '4', '2', '1', '2', '1',
+        'GENERATOR_UNCONSUMED;SINGLE_CONTACT_FAMILY;SINGLE_GENERATOR'],
+    }
+    const checkedAuditFields = [
+      'n_candidates', 'n_selected', 'K_t', 'n_generators_pool', 'n_backbones_pool',
+      'n_contact_families_pool', 'n_generators_sel', 'n_backbones_sel',
+      'n_contact_families_sel', 'flags',
+    ]
+    check('coverage: T1-T5 per-column counts and sorted flags match the hand calculation',
+      Object.keys(expectedAudit).every((target) => JSON.stringify(
+        checkedAuditFields.map((field) => auditByTarget[target]?.[field]),
+      ) === JSON.stringify(expectedAudit[target])),
+      JSON.stringify(auditByTarget))
+    check('coverage: exact T2/T3 unresolvable list',
+      JSON.stringify(rescue.unresolvable) === JSON.stringify([
+        { check: 'contact', reason_code: 'NO_ALTERNATIVE_CONTACT_FAMILY', target_id: 'T2' },
+        { check: 'generator', reason_code: 'NO_ALTERNATIVE_GENERATOR', target_id: 'T2' },
+        { check: 'quota', reason_code: 'QUOTA_POOL_EXHAUSTED', target_id: 'T3' },
+      ]),
+      JSON.stringify(rescue.unresolvable))
+
+    const firstBytes = Object.fromEntries(files.map((file) => [
+      file, readFileSync(join(out, file)),
+    ]))
+    const second = await runOpWithHashSeed('coverage', args, 991)
+    check('coverage: all five artifacts match across independent processes and hash seeds',
+      result.json?.ok === true && second.json?.ok === true && files.every((file) =>
+        firstBytes[file].equals(readFileSync(join(out, file)))))
+
+    const missingSelection = await runOp('coverage', {
+      candidates, config: { out: join(temp, 'missing-selection'), rescue: true },
+    })
+    check('coverage: rescue without selection returns structured ok:false',
+      missingSelection.code === 0 && missingSelection.json?.ok === false &&
+      missingSelection.json?.reason_code === 'INVALID_INPUT')
+
+    const duplicate = join(temp, 'duplicate.csv')
+    writeFileSync(duplicate, 'design_id,target_id\nd1,T1\nd1,T2\n', 'utf8')
+    const duplicateResult = await runOp('coverage', {
+      candidates: duplicate, config: { out: join(temp, 'duplicate-out') },
+    })
+    check('coverage: duplicate design_id returns structured ok:false',
+      duplicateResult.code === 0 && duplicateResult.json?.ok === false)
+
+    const missingTarget = join(temp, 'missing-target.csv')
+    writeFileSync(missingTarget, 'design_id,other\nd1,T1\n', 'utf8')
+    const missingResult = await runOp('coverage', {
+      candidates: missingTarget, config: { out: join(temp, 'missing-target-out') },
+    })
+    check('coverage: missing target_id returns structured ok:false',
+      missingResult.code === 0 && missingResult.json?.ok === false)
+
+    const missingDesign = join(temp, 'missing-design.csv')
+    writeFileSync(missingDesign, 'other,target_id\nx,T1\n', 'utf8')
+    const missingDesignResult = await runOp('coverage', {
+      candidates: missingDesign, config: { out: join(temp, 'missing-design-out') },
+    })
+    check('coverage: missing design_id returns structured ok:false',
+      missingDesignResult.code === 0 && missingDesignResult.json?.ok === false)
+
+    const badQuota = join(temp, 'bad-quota.json')
+    writeFileSync(badQuota, JSON.stringify({ T1: 1.5 }), 'utf8')
+    const badQuotaResult = await runOp('coverage', {
+      candidates, quota: badQuota, config: { out: join(temp, 'bad-quota-out') },
+    })
+    check('coverage: non-integer K_t returns structured ok:false',
+      badQuotaResult.code === 0 && badQuotaResult.json?.ok === false)
+
+    const noGenerator = join(temp, 'no-generator.csv')
+    writeFileSync(noGenerator,
+      'design_id,target_id,backbone_id,contact_cluster_id\na,T1,B1,F1\nb,T1,B1,F1\n', 'utf8')
+    const degraded = await runOp('coverage', {
+      candidates: noGenerator, config: { out: join(temp, 'degraded-out') },
+    })
+    const degradedSummary = JSON.parse(readFileSync(
+      join(temp, 'degraded-out', 'coverage_summary.json'), 'utf8',
+    ))
+    check('coverage: missing generator column warns and skips SINGLE_GENERATOR',
+      degraded.json?.ok === true &&
+      degradedSummary.warnings.includes('MISSING_COLUMN_GENERATOR') &&
+      degradedSummary.targets.per_target.T1.n_generators_pool === null &&
+      !degradedSummary.targets.per_target.T1.flags.includes('SINGLE_GENERATOR'))
+
+    const cappedOut = join(temp, 'capped-out')
+    const capped = await runOp('coverage', {
+      candidates, selection, quota,
+      config: { out: cappedOut, rescue: true, max_actions: 0 },
+    })
+    const cappedPlan = JSON.parse(readFileSync(join(cappedOut, 'rescue_plan.json'), 'utf8'))
+    const cappedSummary = JSON.parse(readFileSync(join(cappedOut, 'coverage_summary.json'), 'utf8'))
+    check('coverage: max_actions stops before the first action and records a warning',
+      capped.json?.ok === true && cappedPlan.actions.length === 0 &&
+      cappedSummary.warnings.includes('MAX_ACTIONS_REACHED'))
+
+    const oneCandidate = join(temp, 'one-candidate.csv')
+    const conflictingSelection = join(temp, 'conflicting-selection.csv')
+    writeFileSync(oneCandidate,
+      'design_id,target_id,generator,backbone_id,contact_cluster_id\nd1,T1,G1,B1,F1\n', 'utf8')
+    writeFileSync(conflictingSelection, 'design_id,target_id\nd1,T9\n', 'utf8')
+    const conflictOut = join(temp, 'conflict-out')
+    const conflict = await runOp('coverage', {
+      candidates: oneCandidate, selection: conflictingSelection,
+      config: { out: conflictOut },
+    })
+    const conflictSummary = JSON.parse(readFileSync(join(conflictOut, 'coverage_summary.json'), 'utf8'))
+    check('coverage: pool target wins over a conflicting selection target_id',
+      conflict.json?.ok === true &&
+      JSON.stringify(Object.keys(conflictSummary.targets.per_target)) === JSON.stringify(['T1']) &&
+      conflictSummary.warnings.includes('SELECTION_TARGET_CONFLICTS_POOL_WINS'))
+
+    const mappedCandidates = join(temp, 'mapped-candidates.csv')
+    const mappedSelection = join(temp, 'mapped-selection.json')
+    const mappedOut = join(temp, 'mapped-out')
+    writeFileSync(mappedCandidates, [
+      'design_id,target_id,generator,backbone_id,target_footprint_cluster_id,ipsae_score',
+      'a,T1,G1,B1,F1,0.90',
+      'b,T1,G1,B2,F1,0.80',
+      'c,T1,G2,B3,F2,0.70',
+      'd,T1,G3,B4,F3,0.60',
+    ].join('\n') + '\n', 'utf8')
+    writeFileSync(mappedSelection, JSON.stringify(['a', 'b']), 'utf8')
+    const mapped = await runOp('coverage', {
+      candidates: mappedCandidates, selection: mappedSelection,
+      config: {
+        out: mappedOut,
+        rescue: true,
+        columns: { contact: 'target_footprint_cluster_id', score: 'ipsae_score' },
+      },
+    })
+    const mappedPlan = JSON.parse(readFileSync(join(mappedOut, 'rescue_plan.json'), 'utf8'))
+    check('coverage: custom contact and score column mappings drive deterministic rescue',
+      mapped.json?.ok === true && mappedPlan.actions.length === 1 &&
+      mappedPlan.actions[0].action === 'REPLACE' &&
+      mappedPlan.actions[0].replace_design_id === 'b' &&
+      mappedPlan.actions[0].add_design_id === 'c')
+  } finally {
+    rmSync(temp, { recursive: true, force: true })
+  }
+}
+
 // G7 budget v0: cross-target integer allocation, feasibility and deterministic artifacts.
 console.log('G7 budget')
 {

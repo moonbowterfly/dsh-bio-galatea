@@ -11,7 +11,7 @@
 
 A standard protein-design pipeline (binders / enzymes / nanobodies) is scattered across a dozen
 tools: ProteinMPNN for sequences, ESMFold for fold validation, interface analysis for binding
-screening, clustering for candidate selection. This plugin gathers them into **18 semantic tools**
+screening, clustering for candidate selection. This plugin gathers them into **19 semantic tools**
 that agents in dsh (and the genie host) can call directly — with **explicit local boundaries**
 (heavy co-folding is honestly redirected to external services instead of pretending capability).
 
@@ -31,9 +31,10 @@ that agents in dsh (and the genie host) can call directly — with **explicit lo
    Contact clusters: galatea_contact_cluster    # target footprint Jaccard + frequency cosine, single-link
    Portfolio:       galatea_portfolio            # coverage floors, global caps and auditable outputs
    Cross-target budget: galatea_budget            # floor / exploit / reserve quotas per target
+   Coverage audit: galatea_coverage               # audit campaign diversity and optionally plan deterministic rescue
 ```
 
-## The 18 tools
+## The 19 tools
 
 | Tool | Purpose | Typical time |
 |---|---|---|
@@ -55,6 +56,11 @@ that agents in dsh (and the genie host) can call directly — with **explicit lo
 | `galatea_ingest` | Ingest local PDB/CIF, CSV/JSON/JSONL, or inline candidates into a conflict-aware JSONL ledger | seconds–minutes |
 | `galatea_portfolio` | Deterministic selection under target coverage, diversity caps and risk limits | seconds–minutes |
 | `galatea_budget` | Cross-target budget allocation with three tiers, pilot shrinkage, density and cap feasibility checks | seconds |
+| `galatea_coverage` | Campaign audit for generator/contact/backbone coverage, unconsumed generators and quota execution; optional deterministic rescue plan | seconds |
+
+## Campaign coverage audit (`galatea_coverage`)
+
+Provide a candidate CSV/JSONL with unique `design_id` and `target_id`, plus optional selection, per-target quota, and config inputs. The tool audits zero coverage, single-generator/contact/backbone-family selections, unconsumed generators, and quota execution. With `rescue=true`, it writes a deterministic ADD/REPLACE plan without changing the selection. It reads only the explicitly configured candidate dimensions and score column; wet-lab labels are not read, and the output is not consumed by loop or portfolio.
 
 ## Cross-target budget scheduling (`galatea_budget`)
 

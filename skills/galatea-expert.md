@@ -6,7 +6,7 @@ language: python
 
 # galatea-expert — 蛋白质结构预测与设计主指引
 
-> 插件：dsh-bio-galatea（G 系列蛋白质工具域）｜ 18 工具：`galatea_status / setup / mpnn / fold / interface / score / inspect / cluster / rank / rank_aggregate / loop / contact_consensus / contact_cluster / redesign / refold / ingest / portfolio / budget`
+> 插件：dsh-bio-galatea（G 系列蛋白质工具域）｜ 19 工具：`galatea_status / setup / mpnn / fold / interface / score / inspect / cluster / rank / rank_aggregate / loop / contact_consensus / contact_cluster / redesign / refold / ingest / portfolio / budget / coverage`
 > 定位：**本机可承担**的蛋白质设计计算（序列设计、单链折叠、界面与序列分析、聚类）；
 > **不承担**重型 co-folding（AF2/AF3/Boltz 复合物预测——走外部服务，产物回本插件分析）。
 
@@ -37,6 +37,7 @@ language: python
 | 多个生成来源的候选要统一留账 | `galatea_ingest` | `structures`、`structs_dir`、`candidates_file`、`records` 四选一；每条候选必须有 `target_id`，身份键为 target + design；结构对象写入 SHA256 与显式 role；namespaced `raw_scores` 的 direction/version 放在 `.schema.json` sidecar；显式 `parent_id` 解析 lineage，缺失父本记 `DANGLING_PARENT` 并可在后续 append 解析；仅处理本地文件 |
 | 要按覆盖、配额和风险约束组成候选短名单 | `galatea_portfolio` | `candidates` + 可选 `config` + 必填 `out`；Stage 0 资格、Stage 1 每靶 coverage floor、Stage 2 全局竞争；默认按靶内 consensus percentile 排序；输出 selected/rejected/summary/manifest，不读实验标签、不接 loop |
 | 要把 campaign 总预算确定性分到多个靶点 | `galatea_budget` | `targets`（target_id + 可选池/结构/pilot 统计）+ 含 `total_budget` 的 `config` + `out`；三层 floor/exploit/reserve 与 preset、`q=N/T≤5` 门、不可行 cap 明确放宽；输出 handoff，不接 portfolio/loop 消费、不读实验标签 |
+| 要审计 campaign 覆盖缺口并生成确定性修补计划 | `galatea_coverage` | `candidates` + 可选 `selection` / `quota` + 含必填 `out` 的 `config`；检查 zero coverage、generator/contact/backbone family、未消费 generator 与 quota；`rescue=true` 仅输出 ADD/REPLACE 计划，不修改 selection、不读实验标签、不接 loop/portfolio 消费 |
 | 有 binder+target 结构，要按区域约束重设计 | `galatea_redesign` | `binder_chain` 与 `mode` 必填推荐；interface-refine hard-freeze ≤4 Å 接触，anchor-preserving 需接触频率（≥0.7 冻结），scaffold-rescue 固定接触与显式 anchor、允许 CORE 改动；三态 rSASA 区域 + 双 shell；`fixed_positions` / `design_positions` 覆盖 preset |
 | 想确认 binder 离开 target 后能否折回参考构象 | `galatea_refold` | `structure_path` + `binder_chain`；可覆盖 `sequence` / `reference_binder_path`；输出 RMSD、F2Å、pLDDT 与二级结构；F2Å 仅记录，现有阈值尚未校准 |
 

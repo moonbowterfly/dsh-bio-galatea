@@ -203,7 +203,7 @@ await test('degraded checks expose controlled remediation codes and a degraded s
   }
 })
 
-await test('capabilities exposes the eighteen-tool manifest with dependency marking', async () => {
+await test('capabilities exposes the nineteen-tool manifest with dependency marking', async () => {
   assert.equal(typeof integration?.createIntegrationService, 'function')
   const dataRoot = mkdtempSync(join(tmpdir(), 'galatea-integration-caps-'))
   const prevHF = process.env.HF_HOME
@@ -221,8 +221,8 @@ await test('capabilities exposes the eighteen-tool manifest with dependency mark
     assert.equal(response.ok, true)
     assert.equal(response.value.plugin_id, 'dsh-bio-galatea')
     assert.equal(response.value.plugin_version, '0.1.0')
-    assert.equal(response.value.tool_count, 18)
-    assert.equal(response.value.tools.length, 18)
+    assert.equal(response.value.tool_count, 19)
+    assert.equal(response.value.tools.length, 19)
     const names = response.value.tools.map((tool) => tool.name)
     for (const expected of ['galatea_status', 'galatea_setup', 'galatea_mpnn', 'galatea_fold', 'galatea_interface', 'galatea_score', 'galatea_inspect', 'galatea_cluster', 'galatea_rank', 'galatea_rank_aggregate', 'galatea_loop', 'galatea_contact_consensus', 'galatea_contact_cluster', 'galatea_redesign', 'galatea_refold', 'galatea_ingest', 'galatea_portfolio', 'galatea_budget']) {
       assert.ok(names.includes(expected), `missing tool ${expected}`)

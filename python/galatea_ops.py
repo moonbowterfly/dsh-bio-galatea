@@ -26,6 +26,7 @@ op 一览（v0.1）：
   contact_consensus 多模型界面接触一致性分析
   contact_cluster    target-side footprint 单链接触/pose 聚类
   ingest          多源候选摄入与统一 JSONL 台账
+  coverage        campaign 覆盖审计与确定性 rescue 计划
   redesign        区域约束式 binder 序列重设计（MPNN）
   refold          binder 单体复折叠救援检查（ESMFold）
   portfolio       约束优先的确定性候选组合选择（不读取实验标签）
@@ -293,6 +294,15 @@ def op_budget(args):
     return run_budget(args)
 
 
+# ---------------------------------------------------------------------------
+# op: coverage — campaign coverage audit and deterministic rescue plan
+# ---------------------------------------------------------------------------
+def op_coverage(args):
+    sys.dont_write_bytecode = True
+    from coverage_tools import run_coverage
+    return run_coverage(args)
+
+
 OPS = {
     "status": op_status,
     "setup": op_setup,
@@ -312,6 +322,7 @@ OPS = {
     "refold": op_refold,
     "portfolio": op_portfolio,
     "budget": op_budget,
+    "coverage": op_coverage,
 }
 
 

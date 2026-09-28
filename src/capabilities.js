@@ -91,6 +91,9 @@ export const TOOLS_MANIFEST = [
   { name: 'galatea_budget', capability: 'galatea.design.budget', category: 'design',
     cost_class: 'medium', network: 'none', mutability: 'writes_output', status: 'ready',
     summary: '跨靶预算调度：三层整数池、pilot shrinkage exploitation、q=N/T 密度门、cap feasibility 与仅产出的 portfolio handoff' },
+  { name: 'galatea_coverage', capability: 'galatea.design.coverage', category: 'design',
+    cost_class: 'medium', network: 'none', mutability: 'writes_output', status: 'ready',
+    summary: 'Campaign 覆盖审计：靶点 generator/contact/backbone family、quota 执行与未消费生成器；可选生成确定性缺口修补计划' },
 ]
 
 export const CONTRACT_VERSION = '1'

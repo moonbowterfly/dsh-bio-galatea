@@ -1,6 +1,6 @@
-// dsh-bio-galatea — 工具层（defineTool 注册，18 语义化工具，v0.1）
+// dsh-bio-galatea — 工具层（defineTool 注册，19 语义化工具，v0.1）
 // 全部执行走 python/galatea_ops.py（JSON stdin 协议）。
-// op 与工具对照（1:1）：status/setup/mpnn/fold/interface/score/inspect/cluster/loop/redesign/refold/ingest/portfolio/budget（同名）；rank.consensus→galatea_rank；rank.aggregate→galatea_rank_aggregate。
+// op 与工具对照（1:1）：status/setup/mpnn/fold/interface/score/inspect/cluster/loop/redesign/refold/ingest/portfolio/budget/coverage（同名）；rank.consensus→galatea_rank；rank.aggregate→galatea_rank_aggregate。
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { isAbsolute } from 'node:path'
 import { callGalatea } from './python.js'
@@ -492,6 +492,32 @@ export function registerTools(ctx) {
       additionalProperties: true,
     },
     op: 'budget',
+    timeoutMs: 120_000,
+  })))
+
+  // galatea_coverage: campaign coverage audit and deterministic rescue plan
+  disposers.push(ctx.tools.register(galateaTool({
+    name: 'galatea_coverage',
+    description:
+      'Campaign 覆盖审计：按 target 汇总零覆盖、单 generator、单 contact family、单 backbone family、未消费 generator 与 quota 执行情况。' +
+      '可选确定性 rescue 仅生成 ADD/REPLACE 缺口修补计划，不修改 selection、不做 optimizer，也不接入 loop 或 portfolio 消费。' +
+      '只读取显式候选维度列与分数列，不读取湿实验标签，不访问网络；输入 candidates、可选 selection/quota、含 out 的 config，输出审计与 manifest。' +
+      '触发词：覆盖、审计、campaign、coverage、audit、rescue、缺口、generator、family、quota。',
+    parameters: {
+      candidates: { type: 'string', required: true, description: '本地候选 CSV 或 JSONL 路径，必含唯一 design_id 与 target_id' },
+      selection: { type: 'string', description: '可选当前选择 CSV/JSONL（design_id 列）或 JSON 字符串数组路径' },
+      quota: { type: 'string', description: '可选每靶配额 CSV（target_id,K_t）或 JSON 映射路径' },
+      config: {
+        oneOf: [
+          { type: 'object', additionalProperties: true },
+          { type: 'string' },
+        ],
+        required: true,
+        description: '配置对象或 JSON 文件路径；config.out 必填，可设 rescue、列映射、多样性目标和 max_actions',
+      },
+      additionalProperties: true,
+    },
+    op: 'coverage',
     timeoutMs: 120_000,
   })))
 

@@ -8,7 +8,7 @@
 ## 它解决什么问题
 
 蛋白质设计（binder / 酶 / 纳米抗体）的标准流程散布在十几个工具里：设计序列要 ProteinMPNN、
-验证折叠要 ESMFold、筛选结合要界面分析、选候选要聚类。本插件把它们收拢为 **18 个语义化工具**，
+验证折叠要 ESMFold、筛选结合要界面分析、选候选要聚类。本插件把它们收拢为 **19 个语义化工具**，
 让 dsh 里的 agent（及 genie 宿主）直接调用——并**明确标注本机边界**（co-folding 等重算力环节
 诚实指向外部服务，不伪装能力）。
 
@@ -29,11 +29,12 @@
    接触聚类： galatea_contact_cluster               # target footprint Jaccard + 频率向量 cosine 单链接
    组合选择： galatea_portfolio                     # 覆盖 floor、全局配额与风险约束；输出可审计四件套
    跨靶预算： galatea_budget                        # floor / exploit / reserve 三层给每个 target 分配整数配额
+   覆盖审计： galatea_coverage                      # 检查 campaign 多样性 / quota，并可输出确定性 rescue 计划
    区域重设计： galatea_redesign                     # 按界面/anchor/骨架区域约束 MPNN
    复折叠救援： galatea_refold                       # 离开 target 后检查 binder 单体折叠
 ```
 
-## 18 个工具一览
+## 19 个工具一览
 
 | 工具 | 用途 | 典型耗时 |
 |---|---|---|
@@ -55,6 +56,11 @@
 | `galatea_ingest` | 摄入本地 PDB/CIF、CSV/JSON/JSONL 或内联候选，按冲突策略写入统一 JSONL 台账 | 秒-分钟级 |
 | `galatea_portfolio` | 按资格、靶点覆盖、多样性配额与风险上限确定性选择候选组合 | 秒-分钟级 |
 | `galatea_budget` | 跨靶预算调度：三层配额、pilot shrinkage、密度门与 cap feasibility；handoff 仅产出 | 秒级 |
+| `galatea_coverage` | Campaign 覆盖审计：检查 generator/contact/backbone family、未消费 generator 和 quota；可输出确定性 rescue 计划 | 秒级 |
+
+## Campaign 覆盖审计（`galatea_coverage`）
+
+输入候选 CSV/JSONL（唯一 `design_id`、`target_id`），可选当前选择集、每靶配额和 config。工具审计零覆盖、单 generator/contact/backbone family、未消费 generator 与 quota 执行情况。`rescue=true` 时只输出确定性的 ADD/REPLACE 计划，不修改选择集；列映射可适配 contact family 与分数字段名。工具只读取指定候选维度和排序分数，不读取湿实验标签，也不接入 loop 或 portfolio 消费。
 
 ## 跨靶预算调度（`galatea_budget`）
 
