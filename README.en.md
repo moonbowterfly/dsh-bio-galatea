@@ -47,6 +47,12 @@ contains `esmfold/` and `mpnn/` reuses those weights directly; pointing at an em
    Coverage audit: galatea_coverage               # audit campaign diversity and optionally plan deterministic rescue
 ```
 
+The first tool call starts an asynchronous Python/torch interpreter probe and immediately returns
+`PYTHON_PROBE_PENDING`; retry shortly afterward. If no candidate has torch, compute tools return
+`PYTHON_TORCH_MISSING` with an install hint. `galatea_status` and `galatea_setup(action="env")`
+remain available for diagnosis and repair. Restart dsh after a manual install or `GALATEA_PYTHON`
+change; a successful `galatea_setup` automatically invalidates the cached result.
+
 ## The 19 tools
 
 | Tool | Purpose | Typical time |

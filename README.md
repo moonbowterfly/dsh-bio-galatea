@@ -72,6 +72,11 @@ npx -y @deepseek-ai/dsh plugin --profile web add @dsh-bio/dsh-bio-galatea
    复折叠救援： galatea_refold                       # 离开 target 后检查 binder 单体折叠
 ```
 
+首次调用任一工具会启动后台 Python/torch 解释器探测，并立即返回 `PYTHON_PROBE_PENDING`；
+稍后重试即可。若全部候选都缺 torch，计算工具返回 `PYTHON_TORCH_MISSING` 和安装提示；
+仍可用 `galatea_status` / `galatea_setup(action="env")` 诊断和修复。手动安装或修改
+`GALATEA_PYTHON` 后需重启 dsh；通过 `galatea_setup` 成功安装后会自动重新探测。
+
 ## 19 个工具一览
 
 | 工具 | 用途 | 典型耗时 |

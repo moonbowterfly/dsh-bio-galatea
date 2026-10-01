@@ -1,10 +1,10 @@
 // python.js — dsh-bio-galatea Python 子进程调用器（JSON stdin 协议）
 // bridge 契约同 dsh-bio-genie / dsh-bio-gem：stdout 最后一行是 JSON；stderr 含
 // "Traceback (most recent call last)" 头 = 代码级失败（恒 ok:true 时靠它判定）。
-import { spawn, spawnSync } from 'node:child_process'
+import { spawn } from 'node:child_process'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { existsSync } from 'node:fs'
+import { access } from 'node:fs/promises'
 import os from 'node:os'
 
 const PYTHON_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'python')
@@ -63,22 +63,116 @@ function candidates() {
   return pythonCandidates().map((candidate) => candidate.path)
 }
 
-/** torch 是本插件全部计算工具的共同硬依赖：探测解释器能否 import torch。 */
-function hasTorch(exe) {
+const TORCH_PROBE_TIMEOUT_MS = 30_000
+const PROBE_PENDING = 'PYTHON_PROBE_PENDING'
+const TORCH_MISSING = 'PYTHON_TORCH_MISSING'
+const TORCH_INSTALL_HINT = '运行 galatea_setup(action="env") 安装私有 Python/torch 环境（成功后自动重探）；若手动安装或修改 GALATEA_PYTHON，请重启 dsh 后再调用 galatea_status 检查。'
+
+async function fileExistsAsync(path) {
   try {
-    const r = spawnSync(exe, ['-I', '-c', 'import torch'], {
-      timeout: 30_000, windowsHide: true, stdio: 'ignore',
-    })
-    return r.status === 0
+    await access(path)
+    return true
   } catch {
     return false
   }
 }
 
-let cachedExe = null
+/** 单候选 import torch 探测；超时立即判失败并继续下一个候选，不阻塞 Node 主线程。 */
+export function probeTorchAsync(exe, { spawnProcess = spawn, timeoutMs = TORCH_PROBE_TIMEOUT_MS } = {}) {
+  return new Promise((resolve) => {
+    let child
+    let timer
+    let settled = false
+    const finish = (ok) => {
+      if (settled) return
+      settled = true
+      if (timer) clearTimeout(timer)
+      resolve(ok)
+    }
+    try {
+      child = spawnProcess(exe, ['-I', '-c', 'import torch'], {
+        windowsHide: true, stdio: 'ignore',
+      })
+      child.once('error', () => finish(false))
+      child.once('close', (code) => finish(code === 0))
+      timer = setTimeout(() => {
+        try { child.kill() } catch { /* process may have exited */ }
+        finish(false)
+      }, timeoutMs)
+    } catch {
+      finish(false)
+    }
+  })
+}
 
 /**
- * 选定解释器（进程内缓存）。
+ * 惰性、单飞的解释器选择。同步读取已就绪的缓存；首次请求只启动异步探测并
+ * 返回可识别的状态错误。setup 成功后 generation 失效旧探测，避免旧结果覆写新环境。
+ */
+export function createPythonResolver({
+  candidateProvider = candidates,
+  fileExists = fileExistsAsync,
+  probeTorch = probeTorchAsync,
+} = {}) {
+  let cachedExe = null
+  let state = 'idle'
+  let generation = 0
+  let pending = null
+
+  function startProbe() {
+    if (state !== 'idle') return
+    state = 'probing'
+    const currentGeneration = generation
+    // 放到下一事件循环轮次：调用方先收到“探测中”，也不在插件加载期预热。
+    pending = new Promise((resolve) => setImmediate(resolve)).then(async () => {
+      for (const exe of candidateProvider()) {
+        if (!exe) continue
+        try {
+          if (exe !== 'python' && !(await fileExists(exe))) continue
+          if (await probeTorch(exe)) return exe
+        } catch { /* 一个候选失败不影响后续候选 */ }
+      }
+      return null
+    }).then((exe) => {
+      if (generation !== currentGeneration) return
+      cachedExe = exe
+      state = exe ? 'ready' : 'missing'
+    }).catch(() => {
+      if (generation === currentGeneration) state = 'missing'
+    }).finally(() => {
+      if (generation === currentGeneration) pending = null
+    })
+  }
+
+  return {
+    pythonExe() {
+      if (cachedExe) return cachedExe
+      if (state === 'missing') {
+        const error = new Error('没有找到可 import torch 的 Python 解释器。')
+        error.code = TORCH_MISSING
+        error.install_hint = TORCH_INSTALL_HINT
+        throw error
+      }
+      startProbe()
+      const error = new Error('Python/torch 解释器正在异步探测；稍后重试此工具。')
+      error.code = PROBE_PENDING
+      throw error
+    },
+    invalidate() {
+      generation += 1
+      cachedExe = null
+      state = 'idle'
+      pending = null
+    },
+    whenSettled() { return pending ?? Promise.resolve() },
+  }
+}
+
+const defaultResolver = createPythonResolver()
+
+/**
+ * 同步读取已选定解释器（进程内缓存）；首次调用启动异步探测并抛带 code 的
+ * “探测中”状态，所有候选失败时抛带 install_hint 的缺失状态。
  *
  * 不做「路径存在即采用」的浅判断——落在一个没有 torch 的解释器上时，
  * 工具只会抛 ModuleNotFoundError 而用户无从判断该装到哪里。这里逐个探测
@@ -87,17 +181,7 @@ let cachedExe = null
  * 注：刻意不在插件加载期调用本函数（探测有秒级开销，会拖慢宿主启动）。
  */
 export function pythonExe() {
-  if (cachedExe) return cachedExe
-  for (const c of candidates()) {
-    if (!c) continue
-    if (c !== 'python' && !existsSync(c)) continue
-    if (hasTorch(c)) {
-      cachedExe = c
-      return c
-    }
-  }
-  cachedExe = 'python'
-  return cachedExe
+  return defaultResolver.pythonExe()
 }
 
 /** op 名 → 对外工具名（rank 两 op 各自对应一个工具）。 */
@@ -108,6 +192,19 @@ const OP_TOOL = {
 
 function toolNameFor(op) {
   return OP_TOOL[op] ?? `galatea_${op}`
+}
+
+function probeStateResult(op, error) {
+  const missing = error.code === TORCH_MISSING
+  return stampProvenance(toolNameFor(op), {
+    ok: false,
+    code: error.code,
+    state: missing ? 'missing' : 'probing',
+    message: error.message,
+    ...(missing
+      ? { missing_dependencies: ['python.torch'], install_hint: TORCH_INSTALL_HINT }
+      : { retry_after_ms: 1_000 }),
+  })
 }
 
 /**
@@ -126,14 +223,59 @@ export function stampProvenance(tool, value) {
 /** 调用 galatea_ops.py（op 协议）：{op, args} -> result；异常/代码级失败抛 Error。 */
 export function callGalatea(op, args, opts = {}) {
   return new Promise((resolve, reject) => {
-    const py = pythonExe()
+    const resolver = opts.resolver ?? defaultResolver
+    let py
+    let missingFallback = false
+    try {
+      py = resolver.pythonExe()
+    } catch (error) {
+      if (error.code === PROBE_PENDING) {
+        resolve(probeStateResult(op, error))
+        return
+      }
+      if (error.code !== TORCH_MISSING) {
+        reject(error)
+        return
+      }
+      // status/setup 是诊断与修复入口；全候选缺 torch 时沿用原来的 PATH 兜底。
+      if (op !== 'status' && op !== 'setup') {
+        resolve(probeStateResult(op, error))
+        return
+      }
+      py = 'python'
+      missingFallback = true
+    }
     const script = join(PYTHON_DIR, 'galatea_ops.py')
-    const cp = spawn(py, ['-I', script], { cwd: PYTHON_DIR, windowsHide: true })
+    let cp
+    try {
+      cp = spawn(py, ['-I', script], { cwd: PYTHON_DIR, windowsHide: true })
+    } catch (error) {
+      if (missingFallback) {
+        resolve(probeStateResult(op, {
+          code: TORCH_MISSING,
+          message: `没有找到可运行的 Python 解释器：${error.message}`,
+        }))
+      } else {
+        reject(new Error(`python spawn failed (${py}): ${error.message}`))
+      }
+      return
+    }
     let out = ''
     let err = ''
     cp.stdout.on('data', (d) => { out += d })
     cp.stderr.on('data', (d) => { err += d })
-    cp.on('error', (e) => reject(new Error(`python spawn failed (${py}): ${e.message}`)))
+    const spawnFailure = (e) => {
+      if (missingFallback) {
+        resolve(probeStateResult(op, {
+          code: TORCH_MISSING,
+          message: `没有找到可运行的 Python 解释器：${e.message}`,
+        }))
+      } else {
+        reject(new Error(`python spawn failed (${py}): ${e.message}`))
+      }
+    }
+    cp.on('error', spawnFailure)
+    cp.stdin.on('error', spawnFailure)
     const timer = opts.timeoutMs
       ? setTimeout(() => { cp.kill(); reject(new Error(`galatea op ${op} timeout after ${opts.timeoutMs}ms`)) }, opts.timeoutMs)
       : null
@@ -154,11 +296,15 @@ export function callGalatea(op, args, opts = {}) {
       }
       if (parsed.ok === false) return reject(new Error(parsed.error || `galatea op ${op} failed (ok:false)`))
       // setup 可能创建/更新私有 venv——使解释器选择缓存失效，下一次调用重新探测
-      if (op === 'setup') cachedExe = null
+      if (op === 'setup') resolver.invalidate()
       resolve(stampProvenance(toolNameFor(op), parsed.result))
     })
-    cp.stdin.write(JSON.stringify({ op, args }))
-    cp.stdin.end()
+    try {
+      cp.stdin.write(JSON.stringify({ op, args }))
+      cp.stdin.end()
+    } catch (error) {
+      spawnFailure(error)
+    }
   })
 }
 

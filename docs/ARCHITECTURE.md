@@ -70,7 +70,12 @@
 4. `CONDA_PREFIX`（通用 conda 信号）
 5. `python`（PATH 兜底）
 
-选择标准 = `import torch` 成功（进程内缓存；`setup` 成功后自动失效重探）。
+选择标准 = 逐候选 `import torch` 成功（每候选 30 秒超时）。首次工具调用才启动异步单飞探测；
+本次调用立即返回 `PYTHON_PROBE_PENDING`，稍后重试。选中解释器后进程内缓存，后续调用同步读取；
+全部候选失败时计算工具返回 `PYTHON_TORCH_MISSING`、`missing_dependencies` 和 `install_hint`。
+`galatea_status` / `galatea_setup` 仍可沿原有 PATH Python 兜底诊断、安装；`setup` 成功后缓存失效，
+下一次调用重新探测。外部手动安装或环境变量变化后需重启 dsh 才能清除进程内缺失缓存。
+插件加载期不启动此探测。
 
 ## 4. 工具 / op 对照（19 工具 = 19 op）
 

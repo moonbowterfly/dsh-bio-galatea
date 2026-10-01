@@ -4,9 +4,11 @@
  * Run: node test/integration.js
  */
 import assert from 'node:assert/strict'
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
+
+const PACKAGE_VERSION = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version
 
 let integration
 try {
@@ -84,7 +86,7 @@ await test('health exposes the frozen protocol identity without a runtime probe'
     ok: true,
     value: {
       pluginId: 'dsh-bio-galatea',
-      pluginVersion: '0.1.0',
+      pluginVersion: PACKAGE_VERSION,
       protocolMajor: 1,
       protocolMinors: [0],
       features: [
@@ -220,7 +222,7 @@ await test('capabilities exposes the nineteen-tool manifest with dependency mark
 
     assert.equal(response.ok, true)
     assert.equal(response.value.plugin_id, 'dsh-bio-galatea')
-    assert.equal(response.value.plugin_version, '0.1.0')
+    assert.equal(response.value.plugin_version, PACKAGE_VERSION)
     assert.equal(response.value.tool_count, 19)
     assert.equal(response.value.tools.length, 19)
     const names = response.value.tools.map((tool) => tool.name)
