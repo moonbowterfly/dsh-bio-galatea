@@ -14,14 +14,14 @@
 
 ## 安装
 
-本包暂未发布 npm（从 GitHub 源安装；纯 ESM 无构建步骤，直接加载）：
+已发布 npm（`@dsh-bio/dsh-bio-galatea`；也可从 GitHub 源安装，纯 ESM 无构建步骤）：
 
 ```bash
 # 0.1.x web / 有全局 CLI 时
-dsh plugin --profile web add github:moonbowterfly/dsh-bio-galatea
+dsh plugin --profile web add @dsh-bio/dsh-bio-galatea
 
 # 无全局 CLI 时：
-npx -y @deepseek-ai/dsh plugin --profile web add github:moonbowterfly/dsh-bio-galatea
+npx -y @deepseek-ai/dsh plugin --profile web add @dsh-bio/dsh-bio-galatea
 ```
 
 **安装到 dsh 桌面端（0.2.0+，推荐）**——桌面端内置 dsh 命令与 pnpm，无需另装 Node/pnpm：
@@ -30,7 +30,7 @@ npx -y @deepseek-ai/dsh plugin --profile web add github:moonbowterfly/dsh-bio-ga
 2. 用桌面端自带 CLI 安装（Windows 默认安装路径）：
 
 ```powershell
-& "$env:LOCALAPPDATA\Programs\DeepSeek Harness\resources\runtime\cli\bin\dsh.cmd" plugin --profile desktop add github:moonbowterfly/dsh-bio-galatea
+& "$env:LOCALAPPDATA\Programs\DeepSeek Harness\resources\runtime\cli\bin\dsh.cmd" plugin --profile desktop add @dsh-bio/dsh-bio-galatea
 ```
 
 3. 重新打开桌面端生效（也可直接在桌面端内 **「插件」页**输入 `github:moonbowterfly/dsh-bio-galatea` 安装，无需退出应用）；打开后跑一次 `galatea_status` 确认组件与环境。
@@ -165,9 +165,9 @@ boundaries (heavy co-folding stays with external services). Designed to coexist 
 dsh-bio-genie (`bio_*` tools) in the same dsh instance.
 
 ```bash
-# from GitHub source (this package is not on npm yet):
-dsh plugin --profile web add github:moonbowterfly/dsh-bio-galatea
+# from npm (also available from source: github:moonbowterfly/dsh-bio-galatea):
+dsh plugin --profile web add @dsh-bio/dsh-bio-galatea
 
 # desktop app (0.2.0+) — bundled CLI with --profile desktop:
-#   & "$env:LOCALAPPDATA\Programs\DeepSeek Harness\resources\runtime\cli\bin\dsh.cmd" plugin --profile desktop add github:moonbowterfly/dsh-bio-galatea
+#   & "$env:LOCALAPPDATA\Programs\DeepSeek Harness\resources\runtime\cli\bin\dsh.cmd" plugin --profile desktop add @dsh-bio/dsh-bio-galatea
 ```
