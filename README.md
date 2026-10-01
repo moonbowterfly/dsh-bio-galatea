@@ -37,6 +37,19 @@ npx -y @deepseek-ai/dsh plugin --profile web add github:moonbowterfly/dsh-bio-ga
 
 > 引擎兼容：0.1.x 与 0.2.0+（桌面端）均已实测——2026-10-01 桌面端 0.2.0-rc.2：19 个工具全量注册 + `galatea_status` 真实执行。
 
+### 模型目录（可安装到其他磁盘）
+
+大体积模型（ESMFold 权重约 2.5GB + MPNN 权重）默认位于 `~/.dsh/dsh-bio-galatea/models`（C 盘）。
+可迁移到其他磁盘（省 C 盘空间；安装后随时可改）：
+
+- **方式一（推荐）**：dsh 桌面端 → 设置面板「BioGenie」→「蛋白设计」页 →「模型目录」卡 → 填目标绝对路径 → **保存并应用**（写 `~/.dsh/dsh-bio-galatea/config.json`，立即生效）。
+- **方式二（环境变量）**：`GALATEA_MODELS_DIR`（优先级最高，适合脚本化）。
+- **方式三（手动）**：编辑 `~/.dsh/dsh-bio-galatea/config.json`：`{ "modelsDir": "F:/Models/AI_models" }`。
+
+解析优先级：`GALATEA_MODELS_DIR` > `config.json.modelsDir` > `~/.dsh/dsh-bio-galatea/models`。
+指向已含 `esmfold/`、`mpnn/` 的目录（如现有模型库）会**直接复用其中的权重**；指向空目录则下次
+`galatea_setup` 会把模型下载/安装到新位置。修改**无需重启**——galatea 下一次工具调用即按新目录解析。
+
 ## 快速开始
 
 ```

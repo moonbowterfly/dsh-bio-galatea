@@ -23,6 +23,32 @@ import tempfile
 # ---------------------------------------------------------------------------
 # 工具函数
 # ---------------------------------------------------------------------------
+def resolve_models_dir(data_root):
+    """解析模型目录（允许把大体积模型安装到其他磁盘）。
+
+    优先级：``GALATEA_MODELS_DIR`` env > ``<data_root>/config.json`` 的
+    ``modelsDir`` 字段 > ``<data_root>/models``（默认）。BioGenie 设置面板的
+    「蛋白设计」页写同一份 config.json；galatea_setup 的下载目标与推理侧读路径
+    都经由本函数（每次调用重新解析——改配置后无需重启）。
+
+    返回 ``(dir, source)``，source ∈ {'env', 'config', 'default'}。
+    """
+    env_dir = os.environ.get("GALATEA_MODELS_DIR")
+    if env_dir and env_dir.strip():
+        return env_dir.strip(), "env"
+    try:
+        cfg_path = os.path.join(data_root, "config.json")
+        if os.path.isfile(cfg_path):
+            with open(cfg_path, "r", encoding="utf-8") as fh:
+                cfg = json.load(fh)
+            models_dir = cfg.get("modelsDir") if isinstance(cfg, dict) else None
+            if isinstance(models_dir, str) and models_dir.strip():
+                return models_dir.strip(), "config"
+    except Exception:
+        pass
+    return os.path.join(data_root, "models"), "default"
+
+
 def _venv_python(data_root):
     venv = os.path.join(data_root, "venv")
     if os.name == "nt":
@@ -101,10 +127,15 @@ def probe_status(data_root):
         "prody": importlib.util.find_spec("prody") is not None,
     }
 
+    # 模型目录解析（支持安装到其他磁盘；见 resolve_models_dir）
+    models_dir, models_dir_source = resolve_models_dir(data_root)
+    info["models_dir"] = models_dir
+    info["models_dir_source"] = models_dir_source
+
     # MPNN 代码 + 权重
     vendor = os.path.join(data_root, "vendor", "LigandMPNN")
     mpnn_code = os.path.exists(os.path.join(vendor, "run.py"))
-    weights_dir = os.path.join(data_root, "models", "mpnn")
+    weights_dir = os.path.join(models_dir, "mpnn")
     weights = []
     if os.path.isdir(weights_dir):
         weights = sorted(f for f in os.listdir(weights_dir) if f.endswith(".pt"))
@@ -128,7 +159,7 @@ def probe_status(data_root):
                     pass
         return False
 
-    esm_dir = os.path.join(data_root, "models", "esmfold")
+    esm_dir = os.path.join(models_dir, "esmfold")
     esm_files = []
     if os.path.isdir(esm_dir):
         esm_files = sorted(f for f in os.listdir(esm_dir) if f.endswith((".bin", ".safetensors", ".pt")))
@@ -309,7 +340,8 @@ def setup_mpnn(data_root, force=False):
     """获取 LigandMPNN 代码（codeload tarball）+ 核心权重（IPD 公开源）。"""
     vendor_dir = os.path.join(data_root, "vendor")
     lm_dir = os.path.join(vendor_dir, "LigandMPNN")
-    weights_dir = os.path.join(data_root, "models", "mpnn")
+    models_dir, _ = resolve_models_dir(data_root)
+    weights_dir = os.path.join(models_dir, "mpnn")
     steps = []
 
     # 1) 代码
@@ -402,7 +434,8 @@ def setup_esmfold(data_root, force=False):
     用私有 venv 的 python（含 huggingface_hub）执行 snapshot_download；
     venv 不存在时提示先跑 env。HF_ENDPOINT 环境变量可指向镜像（hf-mirror.com）。
     """
-    target = os.path.join(data_root, "models", "esmfold")
+    models_dir, _ = resolve_models_dir(data_root)
+    target = os.path.join(models_dir, "esmfold")
     py = _venv_python(data_root)
     if not os.path.exists(py):
         return {"status": "failed", "note": "私有 venv 不存在——请先运行 galatea_setup(action=\"env\")。",

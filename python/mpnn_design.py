@@ -12,7 +12,7 @@ import re
 import subprocess
 import sys
 
-from components import _venv_python
+from components import _venv_python, resolve_models_dir
 
 # model_type → (checkpoint 参数名, 权重文件名)
 MODEL_SPECS = {
@@ -77,7 +77,8 @@ def design_sequences(pdb, out_dir, chains=None, fixed_residues=None, num_seqs=16
                 "vendor_dir": vendor_dir}
 
     ckpt_arg, ckpt_file = MODEL_SPECS[model]
-    checkpoint = os.path.join(data_root, "models", "mpnn", ckpt_file)
+    models_dir, _ = resolve_models_dir(data_root)
+    checkpoint = os.path.join(models_dir, "mpnn", ckpt_file)
     if not os.path.exists(checkpoint):
         return {"ok": False, "error": f"权重缺失: {checkpoint} → 先运行 galatea_setup(action=\"mpnn\")"}
 

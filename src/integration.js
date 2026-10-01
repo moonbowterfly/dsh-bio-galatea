@@ -29,11 +29,31 @@ export const INTEGRATION_FEATURES = [
 ]
 
 const PLUGIN_ID = 'dsh-bio-galatea'
-const PLUGIN_VERSION = '0.1.0'
+const PLUGIN_VERSION = '0.1.1'
 
 export function defaultDataRoot() {
   const dshHome = process.env.DSH_HOME ?? join(os.homedir(), '.dsh')
   return join(dshHome, 'dsh-bio-galatea')
+}
+
+/**
+ * 解析模型目录（允许把大体积模型安装到其他磁盘，或由 BioGenie 设置面板配置）：
+ *   GALATEA_MODELS_DIR env > <root>/config.json 的 modelsDir 字段 > <root>/models。
+ * 每次调用重新解析（改配置后无需重启——python 侧 resolve_models_dir 与之一致）。
+ */
+export function resolveModelsDir(root) {
+  const envDir = process.env.GALATEA_MODELS_DIR
+  if (envDir && envDir.trim()) return { dir: envDir.trim(), source: 'env' }
+  try {
+    const cfgPath = join(root, 'config.json')
+    if (existsSync(cfgPath)) {
+      const cfg = JSON.parse(readFileSync(cfgPath, 'utf8'))
+      if (cfg && typeof cfg.modelsDir === 'string' && cfg.modelsDir.trim()) {
+        return { dir: cfg.modelsDir.trim(), source: 'config' }
+      }
+    }
+  } catch { /* 无配置或坏配置 → 默认 */ }
+  return { dir: join(root, 'models'), source: 'default' }
 }
 
 function listFiles(dir, predicate = () => true) {
@@ -60,14 +80,14 @@ function boundedSummary(dir, predicate) {
   return { count: all.length, items: all.slice(0, 50) }
 }
 
-/** 权重目录摘要：按组件分组（mpnn/、esmfold/）统计文件数与字节数。 */
-function weightsSummary(root) {
+/** 权重目录摘要：按组件分组（mpnn/、esmfold/）统计文件数与字节数（modelsDir=已解析的模型根）。 */
+function weightsSummary(modelsDir) {
   const components = ['mpnn', 'esmfold']
   const items = []
   let totalBytes = 0
   let totalFiles = 0
   for (const component of components) {
-    const dir = join(root, 'models', component)
+    const dir = join(modelsDir, component)
     const files = listFiles(dir)
     const bytes = files.reduce((acc, file) => acc + file.sizeBytes, 0)
     totalBytes += bytes
@@ -80,14 +100,14 @@ function weightsSummary(root) {
       files: files.slice(0, 20).map((file) => ({ name: file.name, sizeBytes: file.sizeBytes })),
     })
   }
-  return { dir: join(root, 'models'), fileCount: totalFiles, sizeBytes: totalBytes, components: items }
+  return { dir: modelsDir, fileCount: totalFiles, sizeBytes: totalBytes, components: items }
 }
 
 /** LigandMPNN 供应商代码 + ProteinMPNN 权重（runtime.mpnn 检查项）。 */
-function mpnnStatus(root) {
+function mpnnStatus(root, modelsDir) {
   const vendor = join(root, 'vendor', 'LigandMPNN')
   const codeOk = existsSync(join(vendor, 'run.py'))
-  const weightsDir = join(root, 'models', 'mpnn')
+  const weightsDir = join(modelsDir, 'mpnn')
   const weights = listFiles(weightsDir, (name) => name.endsWith('.pt'))
   const available = codeOk && weights.length > 0
   let hint
@@ -104,8 +124,8 @@ function mpnnStatus(root) {
 }
 
 /** ESMFold 权重（runtime.esmfold 检查项）——私有目录优先，HF 缓存兜底探测。 */
-function esmfoldStatus(root) {
-  const weightsDir = join(root, 'models', 'esmfold')
+function esmfoldStatus(modelsDir) {
+  const weightsDir = join(modelsDir, 'esmfold')
   const files = listFiles(weightsDir, (name) => /\.(safetensors|bin|pt)$/.test(name))
   let available = files.length > 0
   let source = available ? 'galatea-private' : null
@@ -490,8 +510,9 @@ export function createIntegrationService(options = {}) {
       readAnalysis(python.selected?.path),
       readDevice(),
     ])
-    const mpnn = mpnnStatus(dataRoot)
-    const esmfold = esmfoldStatus(dataRoot)
+    const models = resolveModelsDir(dataRoot)
+    const mpnn = mpnnStatus(dataRoot, models.dir)
+    const esmfold = esmfoldStatus(models.dir)
     const checks = [
       statusCheck(
         'python.torch',
@@ -518,7 +539,7 @@ export function createIntegrationService(options = {}) {
         esmfold.hint,
       ),
     ]
-    return { python, analysis, device, mpnn, esmfold, checks }
+    return { python, analysis, device, mpnn, esmfold, checks, models }
   }
 
   return {
@@ -541,7 +562,7 @@ export function createIntegrationService(options = {}) {
     },
 
     async status() {
-      const { python, analysis, device, mpnn, esmfold, checks } = await collectChecks()
+      const { python, analysis, device, mpnn, esmfold, checks, models } = await collectChecks()
       return {
         ok: true,
         value: {
@@ -551,7 +572,8 @@ export function createIntegrationService(options = {}) {
           features: INTEGRATION_FEATURES,
           checks,
           data: {
-            weights: weightsSummary(dataRoot),
+            weights: weightsSummary(models.dir),
+            modelsDir: { dir: models.dir, source: models.source },
             outputs: boundedSummary(join(dataRoot, 'out')),
           },
           env: {

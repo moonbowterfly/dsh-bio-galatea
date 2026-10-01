@@ -10,7 +10,7 @@ import os
 import subprocess
 import sys
 
-from components import _venv_python
+from components import _venv_python, resolve_models_dir
 
 WORKER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_fold_worker.py")
 
@@ -23,7 +23,8 @@ def fold_sequences(sequences, out_dir, device="auto", data_root=None, chunk_size
     # 解释器与权重路径
     venv_py = _venv_python(data_root)
     runner = venv_py if os.path.exists(venv_py) else sys.executable
-    model_dir = os.path.join(data_root, "models", "esmfold")
+    models_dir, _ = resolve_models_dir(data_root)
+    model_dir = os.path.join(models_dir, "esmfold")
 
     def _dir_has_weights(base):
         # 仅在"权重真实落位"（大文件存在）时使用私有目录；仅 config、或下载中（.cache）不算

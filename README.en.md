@@ -15,6 +15,19 @@ screening, clustering for candidate selection. This plugin gathers them into **1
 that agents in dsh (and the genie host) can call directly — with **explicit local boundaries**
 (heavy co-folding is honestly redirected to external services instead of pretending capability).
 
+### Model directory (can live on another drive)
+
+Large weights (ESMFold ~2.5GB + MPNN checkpoints) default to `~/.dsh/dsh-bio-galatea/models` (on C:).
+You can move them to another drive at any time:
+
+- **Way 1 (recommended)**: dsh desktop app → Settings → "BioGenie" → "Protein Design" page → "Model directory" card → enter an absolute path → **Save & apply** (writes `~/.dsh/dsh-bio-galatea/config.json`; effective immediately).
+- **Way 2 (env)**: `GALATEA_MODELS_DIR` (highest priority).
+- **Way 3 (manual)**: edit `~/.dsh/dsh-bio-galatea/config.json`: `{ "modelsDir": "F:/Models/AI_models" }`.
+
+Priority: `GALATEA_MODELS_DIR` > `config.json.modelsDir` > the default. Pointing at a directory that already
+contains `esmfold/` and `mpnn/` reuses those weights directly; pointing at an empty directory makes the next
+`galatea_setup` download there. **No restart needed** — the next tool call resolves the new directory.
+
 ## Quick start
 
 ```
