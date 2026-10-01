@@ -6,6 +6,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { access } from 'node:fs/promises'
 import os from 'node:os'
+import { TOOLS_MANIFEST } from './capabilities.js'
 
 const PYTHON_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'python')
 
@@ -66,6 +67,8 @@ function candidates() {
 const TORCH_PROBE_TIMEOUT_MS = 30_000
 const PROBE_PENDING = 'PYTHON_PROBE_PENDING'
 const TORCH_MISSING = 'PYTHON_TORCH_MISSING'
+// 导出供测试断言「缺 torch 时哪些操作被拦截、哪些放行」——见 test/torch-gating.js
+export { TORCH_MISSING as TORCH_MISSING_CODE }
 const TORCH_INSTALL_HINT = '运行 galatea_setup(action="env") 安装私有 Python/torch 环境（成功后自动重探）；若手动安装或修改 GALATEA_PYTHON，请重启 dsh 后再调用 galatea_status 检查。'
 
 async function fileExistsAsync(path) {
@@ -194,6 +197,24 @@ function toolNameFor(op) {
   return OP_TOOL[op] ?? `galatea_${op}`
 }
 
+/**
+ * 该 op 是否真正需要 torch。
+ *
+ * 单一真值源 = capabilities 清单的 `requires` 字段：只有显式声明
+ * `python.torch` 的操作才算需要 torch。这与清单对 agent 公开的
+ * `status: 'ready'` 保持一致——清单说ready 的操作在无 torch 环境下
+ * 也必须能跑（纯标准库即可），否则就是对用户的失实承诺。
+ */
+function opNeedsTorch(op) {
+  const tool = toolNameFor(op)
+  const entry = TOOLS_MANIFEST.find((t) => t.name === tool)
+  if (!entry) {
+    // 清单里没有该工具：保守拦截（避免为不存在的操作放宽）
+    return true
+  }
+  return (entry.requires ?? []).includes('python.torch')
+}
+
 function probeStateResult(op, error) {
   const missing = error.code === TORCH_MISSING
   return stampProvenance(toolNameFor(op), {
@@ -238,7 +259,13 @@ export function callGalatea(op, args, opts = {}) {
         return
       }
       // status/setup 是诊断与修复入口；全候选缺 torch 时沿用原来的 PATH 兜底。
-      if (op !== 'status' && op !== 'setup') {
+      // ⚠️ 2026-10-01 修正（Codex 二阶审查 P1）：原逻辑对**所有** op 一律拦截，
+      //导致 8 个不声明 python.torch 的工具（portfolio/budget/coverage/rank/
+      // rank_aggregate/loop 等纯标准库或 analysis 档操作）被误封锁，而
+      // capabilities 清单仍报 ready —— 清单与实际行为矛盾。
+      // 现按清单的 requires 精确判断：只有真正需要 torch 的操作才拦截，
+      // 其余操作回退到 PATH 上的任意 Python（纯标准库即可运行）。
+      if (op !== 'status' && op !== 'setup' && opNeedsTorch(op)) {
         resolve(probeStateResult(op, error))
         return
       }

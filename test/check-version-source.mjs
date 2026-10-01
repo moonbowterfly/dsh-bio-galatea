@@ -9,7 +9,7 @@
  * 断言：integration.js 源码中不存在硬编码版本号字面量。
  */
 import { readFileSync } from 'node:fs'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { join } from 'node:path'
 
 const root = fileURLToPath(new URL('..', import.meta.url))
@@ -40,31 +40,35 @@ check(
   'PLUGIN_VERSION 从 package.json 读取',
 )
 
-// ③ 运行时值必须等于 package.json 的 version
+// ③ 真正 import 生产模块，核对它自报的版本。
+//    ⚠️ 2026-10-01 修正：早先版本在 import 失败时**兜底为「读测试自己定位的
+//    package.json」并判 PASS** —— 那使门禁假绿：把生产代码的包路径改错
+//    （../package.json → ../../package.json，生产模块 ENOENT）时门禁仍报
+//    4 项 PASS + exit 0，而真实导入退出 1。现改为导入失败一律判红。
+let runtimeVersion = null
+try {
+  const mod = await import(pathToFileURL(integrationPath).href)
+  runtimeVersion = mod.__test_pluginVersion ?? null
+  check(
+    true,
+    runtimeVersion === null
+      ? `生产模块可成功 import（无导出钩子，以静态断言 ${pkg.version} 为准）`
+      : `生产模块可成功 import（自报 ${runtimeVersion}）`,
+  )
+} catch (e) {
+  check(false, `生产模块 import 失败（门禁必须判红）：${e.code ?? ''} ${e.message}`)
+}
+
+// ④ 源码里的 .version 取值表达式必须能定位到
 const runtimeMatch = src.match(/PLUGIN_VERSION\s*=\s*JSON\.parse\([\s\S]{0,200}?\)\.version/)
 check(!!runtimeMatch, '能从源码定位到 .version 取值表达式')
 
-// ④ 真正执行一次，确认解析结果与 package.json 一致
-try {
-  const mod = await import(integrationPath)
-  const reported = mod.__test_pluginVersion ?? null
-  if (reported !== null) {
-    check(reported === pkg.version, `导出版本号 ${reported} === package.json ${pkg.version}`)
-  } else {
-    // 未导出测试钩子时，至少验证 JSON.parse 表达式本身可用
-    const url = new URL('../package.json', import.meta.url)
-    const parsed = JSON.parse(readFileSync(url, 'utf8')).version
-    check(parsed === pkg.version, `package.json 解析值 ${parsed} 可读且自洽`)
-  }
-} catch (e) {
-  // Windows 下绝对路径需转 file:// URL 才能被 ESM loader 接受
-  if (e && /Only URLs with a scheme|invalid URL|ERR_UNSUPPORTED_ESM_URL_SCHEME/.test(e.message)) {
-    const url = new URL('../package.json', import.meta.url)
-    const parsed = JSON.parse(readFileSync(url, 'utf8')).version
-    check(parsed === pkg.version, `package.json 解析值 ${parsed} 可读且自洽（跳过动态 import：Windows 路径需 file:// URL）`)
-  } else {
-    check(false, `动态 import 失败：${e.message}`)
-  }
+// ⑤ 若拿到自报版本，必须与 package.json 一致
+if (runtimeVersion !== null) {
+  check(
+    runtimeVersion === pkg.version,
+    `自报版本 ${runtimeVersion} === package.json ${pkg.version}`,
+  )
 }
 
 console.log(`\nversion-source: ${failed === 0 ? 'PASS' : 'FAIL'} (${failed} failed)`)
