@@ -29,7 +29,7 @@ export const INTEGRATION_FEATURES = [
 ]
 
 const PLUGIN_ID = 'dsh-bio-galatea'
-const PLUGIN_VERSION = '0.1.1'
+const PLUGIN_VERSION = '0.1.2'
 
 export function defaultDataRoot() {
   const dshHome = process.env.DSH_HOME ?? join(os.homedir(), '.dsh')
