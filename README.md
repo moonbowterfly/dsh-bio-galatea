@@ -12,6 +12,31 @@
 让 dsh 里的 agent（及 genie 宿主）直接调用——并**明确标注本机边界**（co-folding 等重算力环节
 诚实指向外部服务，不伪装能力）。
 
+## 安装
+
+本包暂未发布 npm（从 GitHub 源安装；纯 ESM 无构建步骤，直接加载）：
+
+```bash
+# 0.1.x web / 有全局 CLI 时
+dsh plugin --profile web add github:moonbowterfly/dsh-bio-galatea
+
+# 无全局 CLI 时：
+npx -y @deepseek-ai/dsh plugin --profile web add github:moonbowterfly/dsh-bio-galatea
+```
+
+**安装到 dsh 桌面端（0.2.0+，推荐）**——桌面端内置 dsh 命令与 pnpm，无需另装 Node/pnpm：
+
+1. 先启动一次桌面端（初始化 `desktop` profile），**完全退出应用**；
+2. 用桌面端自带 CLI 安装（Windows 默认安装路径）：
+
+```powershell
+& "$env:LOCALAPPDATA\Programs\DeepSeek Harness\resources\runtime\cli\bin\dsh.cmd" plugin --profile desktop add github:moonbowterfly/dsh-bio-galatea
+```
+
+3. 重新打开桌面端生效（也可直接在桌面端内 **「插件」页**输入 `github:moonbowterfly/dsh-bio-galatea` 安装，无需退出应用）；打开后跑一次 `galatea_status` 确认组件与环境。
+
+> 引擎兼容：0.1.x 与 0.2.0+（桌面端）均已实测——2026-10-01 桌面端 0.2.0-rc.2：19 个工具全量注册 + `galatea_status` 真实执行。
+
 ## 快速开始
 
 ```
@@ -127,5 +152,9 @@ boundaries (heavy co-folding stays with external services). Designed to coexist 
 dsh-bio-genie (`bio_*` tools) in the same dsh instance.
 
 ```bash
-dsh plugin add @dsh-bio/dsh-bio-galatea
+# from GitHub source (this package is not on npm yet):
+dsh plugin --profile web add github:moonbowterfly/dsh-bio-galatea
+
+# desktop app (0.2.0+) — bundled CLI with --profile desktop:
+#   & "$env:LOCALAPPDATA\Programs\DeepSeek Harness\resources\runtime\cli\bin\dsh.cmd" plugin --profile desktop add github:moonbowterfly/dsh-bio-galatea
 ```

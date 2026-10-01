@@ -104,5 +104,9 @@ MIT (this plugin itself). Third-party components: see "Dependencies & credits".
 See [README.md](./README.md) for the Chinese-first documentation.
 
 ```bash
-dsh plugin add @dsh-bio/dsh-bio-galatea
+# from GitHub source (this package is not on npm yet):
+dsh plugin --profile web add github:moonbowterfly/dsh-bio-galatea
+
+# desktop app (0.2.0+) — bundled CLI with --profile desktop:
+#   & "$env:LOCALAPPDATA\Programs\DeepSeek Harness\resources\runtime\cli\bin\dsh.cmd" plugin --profile desktop add github:moonbowterfly/dsh-bio-galatea
 ```
