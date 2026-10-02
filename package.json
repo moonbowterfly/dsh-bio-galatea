@@ -1,6 +1,6 @@
 {
   "name": "@dsh-bio/dsh-bio-galatea",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "蛋白质结构预测与设计插件：序列设计（ProteinMPNN/SolubleMPNN/LigandMPNN）、结构预测（ESMFold）、复合物界面筛选、序列理化打分与多样性聚类——零手动自举（本地 CPU/GPU 自适应），供 dsh-bio-genie 消费 | Protein structure prediction & design toolkit for dsh (sequence design, folding, interface screening)",
   "repository": {
     "type": "git",
