@@ -3,6 +3,12 @@
   "cases": [
     { "name": "all checks ok", "override": "ok", "expected_status": "ready" },
     { "name": "dependency explicitly missing", "override": "missing", "expected_status": "unavailable" },
-    { "name": "dependency check omitted", "override": null, "expected_status": "unknown" }
+    { "name": "dependency check omitted", "override": null, "expected_status": "unknown" },
+    {
+      "name": "dependency check still probing",
+      "override": "warn",
+      "expected_status": "unknown",
+      "_note": "warn 表示探测未完成，还不能证明 torch 缺失，故与 missing 分开，归 unknown_dependencies。"
+    }
   ]
 }

@@ -217,7 +217,15 @@ function probeTorchVersion(executable) {
   })
 }
 
-/** find_spec 快探测（不加载模块）：biopython + numpy 可用性（runtime.analysis 检查项）。 */
+/**
+ * find_spec 快探测（不加载模块）：biopython + numpy 可用性（runtime.analysis 检查项）。
+ *
+ * 返回值三态，**不可把探测失败折叠成"缺失"**：
+ *   'ok' / 'available' → 依赖就绪
+ *   'missing'          → 解释器正常回答，确实缺 biopython / numpy
+ *   'probe-failed'     → 探测本身没跑成（spawn 失败 / 解释器异常退出 / 超时 / 同步抛异常）
+ * 折叠成 null 会让 20s 超时或系统繁忙被显示成"biopython / numpy 缺失"，属失实陈述。
+ */
 function probeAnalysisDeps(executable) {
   return new Promise((resolve) => {
     let settled = false
@@ -236,14 +244,20 @@ function probeAnalysisDeps(executable) {
       })
       let stdout = ''
       child.stdout?.on('data', (chunk) => { stdout += chunk.toString('utf8') })
-      child.on('error', () => finish(null))
-      child.on('close', (code2) => finish(code2 === 0 ? stdout.trim() || 'available' : null))
+      child.on('error', () => finish('probe-failed'))
+      child.on('close', (code2) => {
+        if (code2 !== 0) return finish('probe-failed')
+        const reported = stdout.trim()
+        // 解释器正常退出但没有可识别输出：同样属于"探测失败"而非"缺依赖"。
+        if (!reported) return finish('probe-failed')
+        finish(reported === 'missing' ? 'missing' : 'ok')
+      })
       timer = setTimeout(() => {
         try { child.kill() } catch { /* already exited */ }
-        finish(null)
+        finish('probe-failed')
       }, 20_000)
     } catch {
-      finish(null)
+      finish('probe-failed')
     }
   })
 }
@@ -476,16 +490,19 @@ export function createIntegrationService(options = {}) {
   function readAnalysis(selectedExecutable) {
     const current = now()
     if (cachedAnalysis && current - cachedAnalysisAt < RUNTIME_PROBE_CACHE_MS) return Promise.resolve(cachedAnalysis)
-    if (!selectedExecutable) return Promise.resolve(null)
+    // 无解释器 = 确定性的"就绪条件不成立"；探针失败是"判不出来"，两者不可混同。
+    if (!selectedExecutable) return Promise.resolve('missing')
     if (pendingAnalysis) return pendingAnalysis
     pendingAnalysis = Promise.resolve()
       .then(() => probeAnalysis(selectedExecutable))
       .then((value) => {
-        cachedAnalysis = value
+        // 旧版探针可能回传 null（探测失败），归一为显式态，避免下游当成"缺依赖"。
+        const normalized = value === null ? 'probe-failed' : value
+        cachedAnalysis = normalized
         cachedAnalysisAt = now()
-        return value
+        return normalized
       })
-      .catch(() => null)
+      .catch(() => 'probe-failed')
       .finally(() => { pendingAnalysis = null })
     return pendingAnalysis
   }
@@ -527,10 +544,17 @@ export function createIntegrationService(options = {}) {
       ),
       statusCheck(
         'runtime.analysis',
-        analysis === null ? 'missing' : (analysis === 'ok' || analysis === 'available' ? 'ok' : 'missing'),
-        analysis === 'ok' || analysis === 'available'
-          ? 'biopython 与 numpy 可用（分析类工具就绪）。'
-          : 'biopython / numpy 缺失（分析类工具不可用）。',
+        // 三态：探测未完成 → warn（判不出来，不谎报缺失）；
+        // 无解释器 → missing；解释器可用但明确报缺 → missing。
+        analysis === 'probe-failed' ? 'warn'
+          : (analysis === 'ok' || analysis === 'available' ? 'ok' : 'missing'),
+        analysis === 'probe-failed'
+          ? '分析依赖探测未完成（解释器无响应、超时或启动失败），状态待下次探测确认。'
+          : !python.selected
+            ? '未找到可用的 Python 解释器，分析类工具不可用。'
+            : analysis === 'ok' || analysis === 'available'
+              ? 'biopython 与 numpy 可用（分析类工具就绪）。'
+              : 'biopython / numpy 缺失（分析类工具不可用）。',
       ),
       statusCheck(
         'runtime.mpnn',

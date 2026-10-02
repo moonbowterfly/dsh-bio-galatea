@@ -103,10 +103,17 @@ export function buildCapabilitiesReport({ pluginVersion, checks = [] } = {}) {
   const checkStatus = new Map(checks.map((c) => [c.id, c.status]))
   const tools = TOOLS_MANIFEST.map((t) => {
     const required = t.requires ?? []
-    const missingDeps = required.filter((id) => checkStatus.has(id) && checkStatus.get(id) !== 'ok')
+    // 三态与 status 层对齐：missing = 确认缺；warn = 探测未完成（判不出来）；
+    // 未出现在 checks = 未观测到。warn 不可归入 missing，否则又变回失实承诺。
+    const missingDeps = required.filter((id) => checkStatus.get(id) === 'missing')
+    const unprobedDeps = required.filter((id) => {
+      const st = checkStatus.get(id)
+      return st !== undefined && st !== 'ok' && st !== 'missing'
+    })
     const unknownDeps = required.filter((id) => !checkStatus.has(id))
     const effectiveStatus = missingDeps.length > 0 ? 'unavailable'
-      : unknownDeps.length > 0 ? 'unknown' : (t.status ?? 'ready')
+      : unprobedDeps.length > 0 ? 'unknown'
+        : unknownDeps.length > 0 ? 'unknown' : (t.status ?? 'ready')
     return {
       name: t.name,
       capability: t.capability,
@@ -118,7 +125,11 @@ export function buildCapabilitiesReport({ pluginVersion, checks = [] } = {}) {
       summary: t.summary,
       ...(t.requires ? { requires: t.requires } : {}),
       ...(missingDeps.length > 0 ? { missing_dependencies: missingDeps } : {}),
-      ...(unknownDeps.length > 0 ? { unknown_dependencies: unknownDeps } : {}),
+      // 未观测到（check 缺席）与探测未完成（warn）都归入 unknown_dependencies：
+      // 两者都无法证明依赖缺失，前端据此提示"待确认"而非"不可用"。
+      ...(unknownDeps.length + unprobedDeps.length > 0
+        ? { unknown_dependencies: [...unprobedDeps, ...unknownDeps] }
+        : {}),
     }
   })
   return {
