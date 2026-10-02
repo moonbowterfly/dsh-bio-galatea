@@ -54,7 +54,7 @@
   },
   "scripts": {
     "smoke": "node test/smoke.js",
-    "test": "node --test test/torch-gating.js && node test/check-version-source.mjs && node test/python-bridge.js && node test/smoke.js && node test/integration.js && node --import ./test/register-dsh-tools.mjs test/optional-injection.js && node --import ./test/register-dsh-tools.mjs test/check-capabilities.mjs && node test/check-counts.mjs && node test/check-schema-dsl.mjs"
+    "test": "node --test test/torch-gating.js && node test/check-version-source.mjs && node test/python-bridge.js && node test/smoke.js && node test/integration.js && node test/capabilities-dependency.mjs && node --import ./test/register-dsh-tools.mjs test/optional-injection.js && node --import ./test/register-dsh-tools.mjs test/check-capabilities.mjs && node test/check-counts.mjs && node test/check-schema-dsl.mjs"
   },
   "peerDependencies": {
     "@deepseek-ai/dsh-tools": "*"

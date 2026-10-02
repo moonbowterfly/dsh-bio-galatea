@@ -1,0 +1,8 @@
+{
+  "dependency_id": "python.torch",
+  "cases": [
+    { "name": "all checks ok", "override": "ok", "expected_status": "ready" },
+    { "name": "dependency explicitly missing", "override": "missing", "expected_status": "unavailable" },
+    { "name": "dependency check omitted", "override": null, "expected_status": "unknown" }
+  ]
+}
