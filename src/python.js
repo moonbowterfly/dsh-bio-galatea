@@ -1,7 +1,7 @@
 // python.js — dsh-bio-galatea Python 子进程调用器（JSON stdin 协议）
 // bridge 契约同 dsh-bio-genie / dsh-bio-gem：stdout 最后一行是 JSON；stderr 含
 // "Traceback (most recent call last)" 头 = 代码级失败（恒 ok:true 时靠它判定）。
-import { spawn } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { access } from 'node:fs/promises'
@@ -9,6 +9,23 @@ import os from 'node:os'
 import { TOOLS_MANIFEST } from './capabilities.js'
 
 const PYTHON_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'python')
+
+/** Abort/timeout 时终止整个 Python 子进程树，避免 setup 的下载器继续写盘。 */
+export function terminateProcessTree(child) {
+  if (!child.pid || child.exitCode !== null) return
+  if (process.platform === 'win32') {
+    const taskkill = join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'taskkill.exe')
+    const result = spawnSync(taskkill, ['/PID', String(child.pid), '/T', '/F'], {
+      windowsHide: true, encoding: 'utf8', timeout: 10_000,
+    })
+    if (result.error || result.status !== 0) {
+      throw new Error(`taskkill failed for PID ${child.pid}: ${result.error?.message
+        ?? (result.stderr || result.stdout || `exit ${result.status}`).trim().slice(0, 300)}`)
+    }
+    return
+  }
+  process.kill(-child.pid, 'SIGTERM')
+}
 
 /**
  * 候选解释器，按优先级（**通用化，不写死任何本机路径**）：
@@ -244,6 +261,10 @@ export function stampProvenance(tool, value) {
 /** 调用 galatea_ops.py（op 协议）：{op, args} -> result；异常/代码级失败抛 Error。 */
 export function callGalatea(op, args, opts = {}) {
   return new Promise((resolve, reject) => {
+    if (opts.signal?.aborted) {
+      reject(opts.signal.reason ?? new Error(`galatea op ${op} aborted`))
+      return
+    }
     const resolver = opts.resolver ?? defaultResolver
     let py
     let missingFallback = false
@@ -275,7 +296,9 @@ export function callGalatea(op, args, opts = {}) {
     const script = join(PYTHON_DIR, 'galatea_ops.py')
     let cp
     try {
-      cp = spawn(py, ['-I', script], { cwd: PYTHON_DIR, windowsHide: true })
+      cp = (opts.spawnProcess ?? spawn)(py, ['-I', script], {
+        cwd: PYTHON_DIR, windowsHide: true, detached: process.platform !== 'win32',
+      })
     } catch (error) {
       if (missingFallback) {
         resolve(probeStateResult(op, {
@@ -303,11 +326,25 @@ export function callGalatea(op, args, opts = {}) {
     }
     cp.on('error', spawnFailure)
     cp.stdin.on('error', spawnFailure)
+    const failWithTreeStop = (reason) => {
+      try {
+        terminateProcessTree(cp)
+        reject(reason)
+      } catch (error) {
+        reject(new Error(`galatea op ${op} cancellation failed: ${error.message}`, { cause: reason }))
+      }
+    }
     const timer = opts.timeoutMs
-      ? setTimeout(() => { cp.kill(); reject(new Error(`galatea op ${op} timeout after ${opts.timeoutMs}ms`)) }, opts.timeoutMs)
+      ? setTimeout(() => failWithTreeStop(new Error(`galatea op ${op} timeout after ${opts.timeoutMs}ms`)), opts.timeoutMs)
       : null
+    const onAbort = () => {
+      if (timer) clearTimeout(timer)
+      failWithTreeStop(opts.signal.reason ?? new Error(`galatea op ${op} aborted`))
+    }
+    if (opts.signal) opts.signal.addEventListener('abort', onAbort, { once: true })
     cp.on('close', (code) => {
       if (timer) clearTimeout(timer)
+      opts.signal?.removeEventListener('abort', onAbort)
       const lines = out.trim().split(/\r?\n/).filter(Boolean)
       if (!lines.length) {
         return reject(new Error(`galatea_ops.py produced no output (op=${op}, python=${py}); stderr: ${err.slice(-400)}`))

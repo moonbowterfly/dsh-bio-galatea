@@ -1,7 +1,12 @@
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
 import { test } from 'node:test'
-import { callGalatea, createPythonResolver, probeTorchAsync } from '../src/python.js'
+import { spawn } from 'node:child_process'
+import { existsSync, mkdtempSync, readFileSync, rmdirSync, statSync, unlinkSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { callGalatea, createPythonResolver, probeTorchAsync, terminateProcessTree } from '../src/python.js'
 
 test('first calls report probing immediately and share one lazy probe; ready cache is synchronous', async () => {
   let probes = 0
@@ -94,4 +99,61 @@ test('invalidate prevents an old in-flight probe from overwriting a new result',
   finishes[0](false)
   await Promise.resolve()
   assert.equal(resolver.pythonExe(), 'mock-python')
+})
+
+test('an aborted tool call cancels its subprocess', async () => {
+  const resolver = { pythonExe: () => process.execPath, invalidate() {} }
+  const signal = AbortSignal.abort()
+  await assert.rejects(callGalatea('status', {}, { resolver, signal }),
+    (error) => error?.name === 'AbortError')
+})
+
+test('aborting after spawn stops the setup process tree', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'galatea-process-tree-'))
+  const pidFile = join(dir, 'grandchild.pid')
+  const heartbeatFile = join(dir, 'heartbeat.txt')
+  const fixture = fileURLToPath(new URL('./fixtures/process-tree-parent.mjs', import.meta.url))
+  const controller = new AbortController()
+  let grandchildPid
+  let fixtureProcess
+  const waitFor = async (ready, timeoutMs = 5_000) => {
+    const deadline = Date.now() + timeoutMs
+    while (!ready()) {
+      if (Date.now() > deadline) throw new Error('process-tree fixture did not start')
+      await new Promise((resolve) => setTimeout(resolve, 50))
+    }
+  }
+  try {
+    const result = callGalatea('setup', {}, {
+      resolver: { pythonExe: () => process.execPath, invalidate() {} },
+      spawnProcess: (_exe, _args, options) => {
+        fixtureProcess = spawn(process.execPath, [fixture], {
+          ...options, env: { ...process.env, GALATEA_GRANDCHILD_PID_FILE: pidFile,
+            GALATEA_HEARTBEAT_FILE: heartbeatFile },
+        })
+        return fixtureProcess
+      },
+      signal: controller.signal,
+    })
+    await waitFor(() => existsSync(pidFile) && existsSync(heartbeatFile))
+    grandchildPid = Number(readFileSync(pidFile, 'utf8'))
+    controller.abort()
+    await assert.rejects(result, (error) => error?.name === 'AbortError')
+    await new Promise((resolve) => setTimeout(resolve, 350))
+    const stoppedAt = statSync(heartbeatFile).size
+    await new Promise((resolve) => setTimeout(resolve, 350))
+    assert.equal(statSync(heartbeatFile).size, stoppedAt,
+      'grandchild continued writing after setup cancellation')
+  } finally {
+    if (fixtureProcess) {
+      try { terminateProcessTree(fixtureProcess) } catch { fixtureProcess.kill() }
+    }
+    if (grandchildPid) {
+      try { process.kill(grandchildPid) } catch { /* already terminated */ }
+    }
+    for (const path of [pidFile, heartbeatFile]) {
+      if (existsSync(path)) unlinkSync(path)
+    }
+    rmdirSync(dir)
+  }
 })

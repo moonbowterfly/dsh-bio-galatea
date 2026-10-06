@@ -5,6 +5,16 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import { isAbsolute } from 'node:path'
 import { callGalatea } from './python.js'
 
+// Python setup 的子步骤顺序执行：env 最长 50 分、mpnn 55 分、esmfold 50 分。
+// 每个 action 的桥时限预留收尾时间；all 的注册上限再多留 1 分钟。
+export const SETUP_ACTION_TIMEOUT_MS = Object.freeze({
+  env: 3_300_000,
+  mpnn: 3_600_000,
+  esmfold: 3_300_000,
+  all: 10_200_000,
+})
+export const SETUP_REGISTRATION_TIMEOUT_MS = 10_260_000
+
 /** 校验输入存在（绝对路径或用户给定路径）。 */
 function requirePath(v, label) {
   if (!v) throw new Error(`${label} required`)
@@ -18,14 +28,16 @@ function galateaTool(opts) {
     name: opts.name,
     description: opts.description,
     parameters: opts.parameters,
-    timeoutMs: typeof opts.timeoutMs === 'function' ? 900_000 : (opts.timeoutMs ?? 300_000),
+    // dsh 读取注册时的静态 timeoutMs；动态内部时限需单独声明上限。
+    timeoutMs: typeof opts.timeoutMs === 'function'
+      ? opts.registrationTimeoutMs : (opts.timeoutMs ?? 300_000),
     output: {
       schema: { type: 'object', additionalProperties: true },
       render: (_args, value) => [{ type: 'text', text: JSON.stringify(value, null, 2) }],
     },
-    async execute(args) {
+    async execute(args, exec) {
       const timeoutMs = typeof opts.timeoutMs === 'function' ? opts.timeoutMs(args) : (opts.timeoutMs ?? 300_000)
-      return callGalatea(opts.op, args, { timeoutMs })
+      return callGalatea(opts.op, args, { timeoutMs, signal: exec?.signal })
     },
   })
 }
@@ -67,7 +79,9 @@ export function registerTools(ctx) {
       force: { type: 'boolean', description: '强制重装（缺省 false，幂等跳过已就绪步骤）' },
     },
     op: 'setup',
-    timeoutMs: (args) => (args?.action === 'env' ? 1_200_000 : 3_600_000),
+    timeoutMs: (args) => SETUP_ACTION_TIMEOUT_MS[args?.action || 'all']
+      ?? SETUP_ACTION_TIMEOUT_MS.all,
+    registrationTimeoutMs: SETUP_REGISTRATION_TIMEOUT_MS,
   })))
 
   // ---------------------------------------------------------------------
