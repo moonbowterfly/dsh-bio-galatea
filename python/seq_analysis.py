@@ -3,6 +3,7 @@
 依赖：biopython（ProtParam）。疏水矩/聚集倾向为显式启发式实现（文档标注口径）。
 """
 import math
+from collections import Counter
 
 # Eisenberg 共识疏水标度（用于疏水矩与聚集代理；值越大越疏水）
 EISENBERG = {
@@ -72,6 +73,58 @@ def _aggregation_proxy(seq):
     }
 
 
+def _low_complexity(seq, window=20, entropy_threshold=2.0, run_threshold=6):
+    """Local novelty pre-screen on cleaned residues; not an official novelty score.
+
+    Positions are 1-based, inclusive, in the cleaned sequence. Only full windows
+    are scored; shorter sequences still get the independent homopolymer check.
+    Defaults can be tuned here without changing existing score op parameters.
+    """
+    # CH01 calibration (20 aa windows, Shannon entropy in bits):
+    # rejected (80 aa): min=1.6814963295296753 at 15-34, max run=4;
+    # passed (78 aa): min=2.7414460711655213 at 59-78, max run=3.
+    # Strict H < 2.0 flags 7 rejected windows and 0 passed windows; run >= 6
+    # alone misses the rejected case. These two cases do not validate official
+    # novelty equivalence or a general-purpose rejection threshold.
+    windows = []
+    min_entropy = None
+    for start in range(len(seq) - window + 1):
+        counts = Counter(seq[start:start + window])
+        entropy = -sum((n / window) * math.log2(n / window) for n in counts.values())
+        min_entropy = entropy if min_entropy is None else min(min_entropy, entropy)
+        if entropy < entropy_threshold:
+            windows.append({
+                "start": start + 1,
+                "end": start + window,
+                "entropy_bits": round(entropy, 6),
+            })
+
+    runs = []
+    max_run = 0
+    start = 0
+    while start < len(seq):
+        end = start + 1
+        while end < len(seq) and seq[end] == seq[start]:
+            end += 1
+        length = end - start
+        max_run = max(max_run, length)
+        if length >= run_threshold:
+            runs.append({"start": start + 1, "end": end,
+                         "residue": seq[start], "length": length})
+        start = end
+
+    return {
+        "flagged": bool(windows or runs),
+        "window_size": window,
+        "entropy_threshold_bits": entropy_threshold,
+        "run_threshold": run_threshold,
+        "min_entropy_bits": round(min_entropy, 6) if min_entropy is not None else None,
+        "max_run": max_run,
+        "windows": windows,
+        "runs": runs,
+    }
+
+
 def score_sequences(sequences):
     """批量理化打分。返回 {"scores": [...], "note": ...}。"""
     from Bio.SeqUtils.ProtParam import ProteinAnalysis
@@ -94,6 +147,7 @@ def score_sequences(sequences):
             "cys_count": seq.count("C"),
             "hydrophobic_moment_h18": _hydrophobic_moment(seq),
             "aggregation": agg,
+            "low_complexity": _low_complexity(seq),
         })
     return {
         "scores": results,

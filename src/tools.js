@@ -172,6 +172,7 @@ export function registerTools(ctx) {
     description:
       '序列理化性质批量打分：长度、pI、净电荷（pH 7.4）、GRAVY 疏水性、疏水矩（Eisenberg 标度，界面/两亲性倾向）、聚集倾向（启发式代理，有阈值判读）、半胱氨酸计数、分子量。' +
       '用于设计候选的快速质量过滤（剔除高聚集倾向/异常电荷的候选）。也接受 FASTA 文件路径。' +
+      '新增 low_complexity 预警：20 aa 窗口 Shannon 熵 <2.0 bit 或单残基连续 run ≥6；返回命中详情，位置为清洗后序列的 1-based 闭区间。短序列仅检查 run；本地预筛不替代官方新颖性检查。' +
       '触发词：序列打分、理化性质、pI、净电荷、疏水性、聚集倾向、候选过滤。',
     parameters: {
       sequences: { type: 'array', items: { type: 'string' }, description: '蛋白质序列列表（与 fasta 二选一）' },
@@ -223,6 +224,7 @@ export function registerTools(ctx) {
     description:
       '候选共识排序（确定性等权共识，无学习融合）：输入候选表（结构化 JSON 或 CSV 文件），每个候选带一组预测器分数（列名如 ipsae_min_* 或 {predictor: score} 字典），' +
       '输出共识均值（即各分数算术平均）+ 分档（strong≥0.73 / medium≥0.65 / weak≥0.2 / reject<0.2）+ 全局排名 + 覆盖率统计。' +
+      '多个预测器分数取算术平均；请勿混入不同模型族的分值（尺度不同，会引入标定偏差）；同族多 seed 分值可直接平均。' +
       '实测口径（1,440 条真实湿实验回测）：共识分 top10-20% 的命中富集约 2.3x——用于从大量候选里挑高分个体。多批次结果合并请用 galatea_rank_aggregate。' +
       '触发词：排序候选、共识打分、挑高分、排个序、top 候选、candidate ranking。',
     parameters: {
@@ -242,6 +244,7 @@ export function registerTools(ctx) {
     description:
       '多批次共识排序结果聚合：把若干批次（galatea_rank 前序结果 / 候选数组 / CSV 路径 / 文件路径混合）合并为统一全局排名并写出 CSV。' +
       '跨批次使用同一确定性排序规则（不平均批内排名）；输出重复 candidate_id 检查。批内 rank 不沿用——每个候选在全表中只排一次。' +
+      '多个预测器分数取算术平均；请勿混入不同模型族的分值（尺度不同，会引入标定偏差）；同族多 seed 分值可直接平均。' +
       '触发词：合并批次、聚合排序、多批汇总、统一排名。',
     parameters: {
       batches: { type: 'string', description: '批次 JSON 文本（数组）：元素可为 CSV 路径字符串 / 候选数组 / {"batch_id":"b1","candidates":[...] 或 "csv_path":"..." 或 "ranking":[...]}' },

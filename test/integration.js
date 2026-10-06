@@ -4,9 +4,11 @@
  * Run: node test/integration.js
  */
 import assert from 'node:assert/strict'
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { tmpdir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
+import { fileURLToPath } from 'node:url'
 
 const PACKAGE_VERSION = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version
 
@@ -309,6 +311,108 @@ await test('status route returns a safe failure envelope when a probe fails', as
   } finally {
     dispose()
   }
+})
+
+const PYTHON_DIR = fileURLToPath(new URL('../python/', import.meta.url))
+const PRIVATE_PYTHON = join(homedir(), '.dsh', 'dsh-bio-galatea', 'venv',
+  process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python')
+const CONDA_PYTHON = process.env.CONDA_PREFIX && join(process.env.CONDA_PREFIX,
+  process.platform === 'win32' ? 'python.exe' : 'bin/python')
+const SCORE_PYTHON = [process.env.GALATEA_PYTHON, PRIVATE_PYTHON, CONDA_PYTHON]
+  .find((path) => path && existsSync(path)) ?? (process.platform === 'win32' ? 'python.exe' : 'python3')
+
+function checkSequenceAnalysis(source) {
+  const result = spawnSync(SCORE_PYTHON, ['-B', '-I', '-c', `
+import sys
+sys.path.insert(0, sys.argv[1])
+from seq_analysis import score_sequences, _low_complexity
+HIGH_RISK = 'TGIPAVIQVLEQQLAAAEALLAQLEAQLAAAEAASGGDDDTNGNNNNDNNPAGVFSMLIIKVLSEIALLKKRLKVLKAKI'
+PASSED = 'EKSLVEKALEEAYKLFEEILPELVKLSPHEAYETIKKKFTELAKKVPFSEEEYYEFMAKVIVLEWEAWVKVMEEKAKE'
+${source}
+`, PYTHON_DIR], { encoding: 'utf8', timeout: 30_000, windowsHide: true })
+  assert.ifError(result.error)
+  assert.equal(result.status, 0, result.stderr || result.stdout)
+}
+
+await test('low complexity: CH01 rejected=true / passed=false with measured entropy', () => {
+  checkSequenceAnalysis(`
+high, passed = [row['low_complexity'] for row in score_sequences([HIGH_RISK, PASSED])['scores']]
+# 20 aa calibration: rejected minimum 1.6814963295296753 bits (15-34),
+# passed minimum 2.7414460711655213 bits (59-78); longest runs 4 / 3.
+assert high['flagged'] is True and passed['flagged'] is False
+assert high['min_entropy_bits'] == 1.681496
+assert passed['min_entropy_bits'] == 2.741446
+assert high['max_run'] == 4 and passed['max_run'] == 3
+assert len(high['windows']) == 7 and passed['windows'] == []
+assert high['runs'] == [] and passed['runs'] == []
+assert {'start': 15, 'end': 34, 'entropy_bits': 1.681496} in high['windows']
+`)
+})
+
+await test('low complexity: homopolymer, clean, short and exact threshold boundaries', () => {
+  checkSequenceAnalysis(`
+same, clean, short, six, single = [row['low_complexity'] for row in score_sequences(
+    ['A' * 20, 'ACDEFGHIKLMNPQRSTVWY', 'ACD', 'AAAAAA', 'A'])['scores']]
+assert same['flagged'] is True and same['min_entropy_bits'] == 0.0
+assert same['windows'] == [{'start': 1, 'end': 20, 'entropy_bits': 0.0}]
+assert same['runs'] == [{'start': 1, 'end': 20, 'residue': 'A', 'length': 20}]
+assert clean['flagged'] is False and clean['min_entropy_bits'] == 4.321928
+assert clean['windows'] == [] and clean['runs'] == []
+assert short['flagged'] is False and short['min_entropy_bits'] is None
+assert short['windows'] == [] and short['runs'] == []
+assert six['flagged'] is True and six['windows'] == []
+assert six['runs'] == [{'start': 1, 'end': 6, 'residue': 'A', 'length': 6}]
+assert single['flagged'] is False and single['min_entropy_bits'] is None
+assert _low_complexity('AAAAA')['flagged'] is False
+assert _low_complexity('ACDE' * 5)['min_entropy_bits'] == 2.0
+assert _low_complexity('ACDE' * 5)['flagged'] is False  # strict H < 2.0
+assert _low_complexity('ACDE' * 5, entropy_threshold=2.01)['flagged'] is True
+assert _low_complexity('AAAAA', run_threshold=5)['flagged'] is True
+assert _low_complexity('AAAAAA', run_threshold=7)['flagged'] is False
+assert _low_complexity('AA', window=2)['flagged'] is True
+`)
+})
+
+await test('score sequences: frozen legacy fields and invalid-input behavior remain unchanged', () => {
+  checkSequenceAnalysis(`
+# Exact score snapshots from the clean master@61c4fea baseline.
+expected = [
+    {'index': 0, 'length': 80, 'pI': 4.85, 'net_charge_pH74': -2.8,
+     'gravy': 0.186, 'aromaticity': 0.013, 'molecular_weight_kda': 8.31,
+     'cys_count': 0, 'hydrophobic_moment_h18': 0.599,
+     'aggregation': {'max_hydrophobic_run': 4, 'max_window7_eisenberg': 0.936, 'risk_score': 0.557}},
+    {'index': 1, 'length': 78, 'pI': 4.93, 'net_charge_pH74': -6.32,
+     'gravy': -0.45, 'aromaticity': 0.128, 'molecular_weight_kda': 9.34,
+     'cys_count': 0, 'hydrophobic_moment_h18': 0.369,
+     'aggregation': {'max_hydrophobic_run': 4, 'max_window7_eisenberg': 0.641, 'risk_score': 0.434}},
+]
+result = score_sequences([HIGH_RISK, PASSED])
+assert set(result) == {'scores', 'note'}
+for row in result['scores']:
+    assert 'low_complexity' in row
+    del row['low_complexity']
+assert result['scores'] == expected
+assert result['note'] == ('pI/净电荷/GRAVY 由 Biopython ProtParam 计算；疏水矩为 Eisenberg 标度滑窗实现；'
+                          '聚集倾向为显式启发式代理（非 AGGRESCAN/TANGO），只用其阈值判读（低<0.35/中0.35-0.55/高>0.55）。')
+assert score_sequences(['', 'xxx!?'])['scores'] == [
+    {'index': i, 'error': 'no valid residues（非标准字符已剔除后为空）'} for i in range(2)]
+assert score_sequences([])['scores'] == []
+assert score_sequences([' ac d!? ']) == score_sequences(['ACD'])
+`)
+})
+
+await test('score op: JSON bridge exposes low complexity for both CH01 cases', () => {
+  checkSequenceAnalysis(`
+import json
+import subprocess
+from pathlib import Path
+request = {'op': 'score', 'args': {'sequences': [HIGH_RISK, PASSED]}}
+process = subprocess.run([sys.executable, '-B', '-I', str(Path(sys.argv[1]) / 'galatea_ops.py')],
+                         input=json.dumps(request), text=True, encoding='utf-8', capture_output=True, check=True)
+assert 'Traceback' not in process.stderr, process.stderr
+response = json.loads(process.stdout.strip().splitlines()[-1])
+assert response == {'ok': True, 'result': score_sequences([HIGH_RISK, PASSED])}
+`)
 })
 
 if (failed) process.exitCode = 1

@@ -97,3 +97,14 @@ FASTA 进 → `galatea_score`（过滤）→ `galatea_cluster`（去冗余）→
 | `galatea_mpnn` 报「run.py 退出码非 0」 | 看返回的 stderr_tail；常见：输入 PDB 链名不匹配 / 权重缺失 |
 | `galatea_fold` 报 OOM | 减少序列数/缩短序列；或强制 `device=cpu` |
 | 网络（mpnn/esmfold 下载失败） | 检查网络；esmfold 可设 `HF_ENDPOINT=https://hf-mirror.com` 后重试 |
+
+## 七、生成平台与新颖性（实战提炼）
+
+以下为 CH01 条件性 EGFR binder 实战记录，完成率与耗时仅作该批经验参考。
+
+- **FreeBindCraft（免费档）**：单批完成率约 29%，4h 硬上限；停摆批次无半成品可取，宜规划多 seed 卫星分支（如 3–4 分支）。
+- **ESMFold2 Binder**：快（约 10 分钟），但官方新颖性风险高，已有实测被淘汰案例。
+- **低复杂度序列是新颖性杀手**：多 A/L、多 N/D 段可先看 `galatea_score` 的 `low_complexity.flagged` 预警。
+  默认 20 aa 窗口 Shannon 熵 <2.0 bit 或单残基连续 run ≥6 即标记；`windows` / `runs` 提供命中详情（清洗后序列的 1-based 闭区间）。
+  短于 20 aa 时 `min_entropy_bits=null`、`windows=[]`，仍检查 run；`flagged=false` 不保证官方通过。
+- 上传后等待**官方新颖性检查 ≥3/4** 才能提交；本地序列筛查只作预筛，算法与官方不同。
