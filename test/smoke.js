@@ -390,7 +390,7 @@ console.log('L1 协议与逻辑')
       round: { round_id: 1, candidates: loopCandidates(1), notes: 'synthetic round one' },
     })
     check('loop.log: 两轮登记并建立 rounds 索引', firstLog.json?.ok === true &&
-      secondLog.json?.ok === true && secondLog.json?.rounds_total === 2)
+      secondLog.json?.ok === true && secondLog.json?.result?.rounds_total === 2)
 
     const duplicate = await runOp('loop', {
       action: 'log', campaign_dir: campaignDir,
@@ -401,7 +401,7 @@ console.log('L1 协议与逻辑')
 
     const nextArgs = { action: 'next', campaign_dir: campaignDir }
     const next = await runOp('loop', nextArgs)
-    const plan = next.json?.round_plan
+    const plan = next.json?.result?.round_plan
     const parents = plan?.parents || []
     const localCounts = parents[0]?.operators?.map((operator) => operator.n) || []
     check('loop.next: 父本目标落在 [min_parents,max_parents]',
@@ -440,7 +440,7 @@ console.log('L1 协议与逻辑')
       round: { round_id: 0, candidates: loopCandidates(0, true), notes: 'synthetic contact-consensus round' },
     })
     const contactNext = await runOp('loop', { action: 'next', campaign_dir: contactCampaignDir })
-    const contactParents = contactNext.json?.round_plan?.parents || []
+    const contactParents = contactNext.json?.result?.round_plan?.parents || []
     check('loop.next: valid contact-consensus carries candidate anchors and status note',
       contactLog.json?.ok === true && contactParents.length > 0 &&
       contactParents.every((parent) => JSON.stringify(parent.anchor_residues) === JSON.stringify(['B42']) &&
@@ -450,7 +450,7 @@ console.log('L1 协议与逻辑')
       round: { round_id: 0, candidates: loopCandidates(0, true, 'INSUFFICIENT') },
     })
     const insufficientNext = await runOp('loop', { action: 'next', campaign_dir: insufficientCampaignDir })
-    const insufficientParents = insufficientNext.json?.round_plan?.parents || []
+    const insufficientParents = insufficientNext.json?.result?.round_plan?.parents || []
     check('loop.next: INSUFFICIENT contact-consensus carries no anchors and keeps degrade note',
       insufficientLog.json?.ok === true && insufficientParents.length > 0 &&
       insufficientParents.every((parent) => Array.isArray(parent.anchor_residues) &&
@@ -459,10 +459,10 @@ console.log('L1 协议与逻辑')
 
     const status = await runOp('loop', { action: 'status', campaign_dir: campaignDir })
     check('loop.status: 汇总两轮、谱系、推广统计和最新计划路径',
-      status.json?.ok === true && status.json?.status?.rounds === 2 &&
-      status.json?.status?.n_lineages > 0 &&
-      Array.isArray(status.json?.status?.promoted_rate_per_round) &&
-      status.json?.status?.latest_plan_path === next.json?.plan_path)
+      status.json?.ok === true && status.json?.result?.status?.rounds === 2 &&
+      status.json?.result?.status?.n_lineages > 0 &&
+      Array.isArray(status.json?.result?.status?.promoted_rate_per_round) &&
+      status.json?.result?.status?.latest_plan_path === next.json?.result?.plan_path)
 
     writeFileSync(join(emptyCampaignDir, 'campaign.json'), JSON.stringify({
       schema_version: 1, campaign_id: 'empty', rounds: [], operator_stats: {},
@@ -1346,7 +1346,7 @@ print(json.dumps({'checks':checks}, ensure_ascii=False))
   const ledger = join(bridgeDir, 'bridge.jsonl')
   const r = await runOp('ingest', { records: [{ design_id: 'bridge1', sequence: 'ACD' }], ledger, mode: 'replace', target_id: 'target1' })
   check('ingest: registered op writes one ledger row', r.code === 0 && r.json?.ok === true &&
-    r.json?.stats?.n_written === 1 && existsSync(ledger), JSON.stringify(r.json))
+    r.json?.result?.stats?.n_written === 1 && existsSync(ledger), JSON.stringify(r.json))
   rmSync(bridgeDir, { recursive: true, force: true })
 }
 
@@ -1988,7 +1988,7 @@ if (!HEAVY) {
       fixed_positions: ['A1', 'A2'], design_positions: ['A3', 'A4'], n_sequences: 2, seed: 0,
     }, 600000)
     const res = r.json?.result
-    check('redesign: 真实 MPNN 接受显式 mask 并回读一致', res?.ok === true && (res?.designs?.length ?? 0) >= 2 &&
+    check('redesign: 真实 MPNN 接受显式 mask 并回读一致', (res?.designs?.length ?? 0) >= 2 &&
       JSON.stringify(res?.fixed_positions) === JSON.stringify(['A1', 'A2']) &&
       JSON.stringify(res?.design_positions) === JSON.stringify(['A3', 'A4']))
     const rseqs = res?.designs?.map((d) => d.sequence) || []

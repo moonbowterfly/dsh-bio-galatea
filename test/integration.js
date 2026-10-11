@@ -375,15 +375,23 @@ assert _low_complexity('AA', window=2)['flagged'] is True
 
 await test('score sequences: frozen legacy fields and invalid-input behavior remain unchanged', () => {
   checkSequenceAnalysis(`
-# Exact score snapshots from the clean master@61c4fea baseline.
+# Exact unchanged legacy fields plus GL-1 v2 values and method fields.
+method = {'id': 'galatea.hydrophobic_moment', 'version': '2',
+          'angle_deg_per_residue': 100, 'window': 18,
+          'window_rule': 'min(18, length)', 'aggregation': 'max over all full windows',
+          'min_length': 6, 'scale': 'Eisenberg consensus hydrophobicity',
+          'output_precision': 3,
+          'v1_note': 'v1 历史错误公式（3.6°/残基，2πn/100）已废弃，不提供默认兼容模式'}
 expected = [
     {'index': 0, 'length': 80, 'pI': 4.85, 'net_charge_pH74': -2.8,
      'gravy': 0.186, 'aromaticity': 0.013, 'molecular_weight_kda': 8.31,
-     'cys_count': 0, 'hydrophobic_moment_h18': 0.599,
+      'cys_count': 0, 'hydrophobic_moment_h18': 0.35,
+      'hydrophobic_moment_method': method,
      'aggregation': {'max_hydrophobic_run': 4, 'max_window7_eisenberg': 0.936, 'risk_score': 0.557}},
     {'index': 1, 'length': 78, 'pI': 4.93, 'net_charge_pH74': -6.32,
      'gravy': -0.45, 'aromaticity': 0.128, 'molecular_weight_kda': 9.34,
-     'cys_count': 0, 'hydrophobic_moment_h18': 0.369,
+      'cys_count': 0, 'hydrophobic_moment_h18': 0.598,
+      'hydrophobic_moment_method': method,
      'aggregation': {'max_hydrophobic_run': 4, 'max_window7_eisenberg': 0.641, 'risk_score': 0.434}},
 ]
 result = score_sequences([HIGH_RISK, PASSED])

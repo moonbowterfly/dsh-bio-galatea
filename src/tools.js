@@ -224,13 +224,16 @@ export function registerTools(ctx) {
     description:
       '候选共识排序（确定性等权共识，无学习融合）：输入候选表（结构化 JSON 或 CSV 文件），每个候选带一组预测器分数（列名如 ipsae_min_* 或 {predictor: score} 字典），' +
       '输出共识均值（即各分数算术平均）+ 分档（strong≥0.73 / medium≥0.65 / weak≥0.2 / reject<0.2）+ 全局排名 + 覆盖率统计。' +
-      '多个预测器分数取算术平均；请勿混入不同模型族的分值（尺度不同，会引入标定偏差）；同族多 seed 分值可直接平均。' +
+       'typed 评分需声明每个实际预测器的 family/version/metric/score_version/direction/unit；仅同合同、显式 same_scale=true 且 higher 可等权平均。legacy 数值仍可排序，但跨轮分数不可比较。' +
       '实测口径（1,440 条真实湿实验回测）：共识分 top10-20% 的命中富集约 2.3x——用于从大量候选里挑高分个体。多批次结果合并请用 galatea_rank_aggregate。' +
       '触发词：排序候选、共识打分、挑高分、排个序、top 候选、candidate ranking。',
     parameters: {
       candidates: { type: 'string', description: '候选数据 JSON 文本（与 csv_path 二选一）。数组：[{"candidate_id":"c1","ipsae_min_p1":0.9,"ipsae_min_p2":0.8}, ...]；或紧凑对象 {"c1":{"p1":0.9},"c2":{"p1":0.5}}；也接受 {"scores":{...}} 嵌套或 {"ranking":[...]} 前序结果' },
       csv_path: { type: 'string', description: '或：候选表 CSV 绝对路径（表头含 id 列 + 预测器分数列）' },
       score_prefix: { type: 'string', description: '分数列前缀（缺省 ipsae_min_，作用于 CSV 列与扁平 JSON 字段）' },
+      predictor_metadata: { type: 'object', additionalProperties: true, description: '可选 typed 声明：每个实际 predictor key 对应 model_family/model_version/score_metric/score_version/direction/unit；多预测器各需 same_scale:true。仅校验声明一致性，不证明后端身份。' },
+      output_csv: { type: 'string', description: '可选输出 CSV 路径；同时写入与 CSV 字节绑定的 score-contract.json sidecar' },
+      overwrite: { type: 'boolean', description: 'output_csv 已存在时是否允许覆盖；默认 false' },
     },
     op: 'rank.consensus',
     timeoutMs: 120_000,
@@ -244,7 +247,7 @@ export function registerTools(ctx) {
     description:
       '多批次共识排序结果聚合：把若干批次（galatea_rank 前序结果 / 候选数组 / CSV 路径 / 文件路径混合）合并为统一全局排名并写出 CSV。' +
       '跨批次使用同一确定性排序规则（不平均批内排名）；输出重复 candidate_id 检查。批内 rank 不沿用——每个候选在全表中只排一次。' +
-      '多个预测器分数取算术平均；请勿混入不同模型族的分值（尺度不同，会引入标定偏差）；同族多 seed 分值可直接平均。' +
+       '逐批核验实际 predictor scores、来源合同与 CSV sidecar；typed/legacy 混合或合同冲突返回错误且不覆盖目标 CSV。原始批次首次 typed 声明须放在该批 predictor_metadata。' +
       '触发词：合并批次、聚合排序、多批汇总、统一排名。',
     parameters: {
       batches: { type: 'string', description: '批次 JSON 文本（数组）：元素可为 CSV 路径字符串 / 候选数组 / {"batch_id":"b1","candidates":[...] 或 "csv_path":"..." 或 "ranking":[...]}' },
@@ -288,6 +291,7 @@ export function registerTools(ctx) {
               },
             },
           },
+          predictor_metadata: { type: 'object', additionalProperties: true, description: '整轮 typed 声明；key 必须覆盖实际 predictor 并包含 model_family/model_version/score_metric/score_version/direction/unit；多 predictor 各需 same_scale:true。缺失/失败预测候选记不可比较。' },
           notes: { type: 'json', description: '本轮说明（可选 JSON 值）' },
         },
       },
@@ -301,9 +305,13 @@ export function registerTools(ctx) {
           per_parent_local: { type: 'integer', description: '每父本本地序列预算（默认 32）' },
           cloud_per_parent: { type: 'integer', description: '每父本云端预测数（默认 6）' },
           min_consensus_pctl: { type: 'number', description: '最低共识百分位（默认 0.50）' },
-          promotion_delta: { type: 'number', description: '推广所需百分位提升（默认 0.05）' },
+          consensus_promotion_delta: { type: 'number', description: '跨轮 parent-child consensus 绝对提升阈值（默认 0.05）' },
           max_rounds: { type: 'integer', description: '停止建议的最大轮数（默认 6）' },
-          improvement_epsilon: { type: 'number', description: '最佳百分位停滞阈值（默认 0.02）' },
+          consensus_improvement_epsilon: { type: 'number', description: '连续两次有效 consensus 增量低于此值时分数停滞（默认 0.02）' },
+          promotion_rate_stop_threshold: { type: 'number', description: '连续两次有效 parent-child 推广率低于此值时停战（默认 0.05）' },
+          promotion_delta: { type: 'number', description: '旧百分位参数，仅兼容解析并忽略；使用 consensus_promotion_delta' },
+          improvement_epsilon: { type: 'number', description: '旧百分位参数，仅兼容解析并忽略；使用 consensus_improvement_epsilon' },
+          improvement_abs: { type: 'number', description: 'WorkBuddy v2 旧绝对参数，仅兼容解析并忽略；使用 consensus_improvement_epsilon' },
           diversity_threshold: { type: 'number', description: '序列簇同一性阈值（默认 0.8）' },
         },
       },

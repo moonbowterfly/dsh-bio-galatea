@@ -1,11 +1,10 @@
 """Deterministic, file-backed iteration planning for protein design campaigns.
 
 The loop op is a decision and bookkeeping layer. It never launches sequence
-generation or a remote prediction service. Scores use ``rank_tools``' existing
-equal-weight, skip-missing consensus; sequence clusters use
+generation or a remote prediction service. Sequence clusters use
 ``seq_analysis.cluster_sequences``.
 
-Planning policy (v2):
+Planning policy (v3):
 * score candidates in each round, then convert consensus to a descending,
   tie-aware percentile (average rank / round size; best is 1.0);
 * mark a candidate eligible iff QC is not FAIL and its percentile meets the
@@ -20,9 +19,10 @@ Planning policy (v2):
   through prior logged rounds; candidates without a parent start a lineage;
 * diversity uses ``cluster_sequences`` first (different clusters rank above
   sequence distance), then greedy max-min prefix identity distance;
-* promotion compares child and parent within-round percentiles. Stopping uses
-  the last two promotion rates, the last two best-percentile improvements,
-  cumulative high-confidence eligible candidates, and max_rounds.
+* cross-round score comparisons require adjacent rounds, verified declared
+  metadata, identical actual candidate coverage and non-FAIL QC. The common
+  comparison uses nine-decimal half-even consensus values. Unknown comparisons
+  stay null and cannot trigger score-based stopping.
 
 No generated timestamp is included: the same campaign state and params produce
 the same plan JSON and response.
@@ -44,11 +44,17 @@ DEFAULT_PARAMS = {
     "per_parent_local": 32,
     "cloud_per_parent": 6,
     "min_consensus_pctl": 0.50,
-    "promotion_delta": 0.05,
+    "consensus_promotion_delta": 0.05,
     "max_rounds": 6,
-    "improvement_epsilon": 0.02,
+    "consensus_improvement_epsilon": 0.02,
+    "promotion_rate_stop_threshold": 0.05,
     "diversity_threshold": 0.8,
 }
+
+# R2: new absolute consensus thresholds have independent names. Legacy
+# percentile thresholds and WorkBuddy improvement_abs parse but are ignored.
+LOOP_POLICY_VERSION = "galatea.loop.v3"
+DEPRECATED_PARAMS = {"promotion_delta", "improvement_epsilon", "improvement_abs"}
 
 
 class LoopInputError(ValueError):
@@ -174,6 +180,11 @@ def _load_history(campaign_dir, campaign):
         candidates = record.get("candidates")
         if not isinstance(candidates, list):
             raise LoopInputError(f"round {round_id} candidates must be an array")
+        if "round_content_sha256" in record:
+            from score_contract import digest
+            content = {key: value for key, value in record.items() if key != "round_content_sha256"}
+            if record["round_content_sha256"] != digest(content):
+                raise LoopInputError(f"round {round_id} content hash mismatch")
         history.append(record)
     history.sort(key=lambda item: item["round_id"])
     return history
@@ -220,18 +231,21 @@ def _normalize_candidates(raw_candidates):
         item["flags"] = flags
         normalized.append(item)
 
-    # Reuse rank_tools' score parsing, skip-missing behavior, and arithmetic mean.
-    try:
-        from rank_tools import rank_consensus
-        ranked = rank_consensus({"candidates": normalized})["ranking"]
-    except (ImportError, ValueError, OSError) as exc:
-        raise LoopInputError(f"invalid candidate scores: {exc}")
-    ranking_by_id = {row["candidate_id"]: row for row in ranked}
+    # Raw prediction failures may have no usable score. Keep them as records,
+    # without manufacturing consensus zero or promoting them to a typed batch.
+    from rank_tools import _extract_scores, _score_map_fields, DEFAULT_SCORE_PREFIX
     for item in normalized:
-        result = ranking_by_id[item["candidate_id"]]
-        item["predictor_scores"] = result["predictor_scores"]
-        item["consensus"] = result["consensus"]
-        item["n_scores"] = result["n_scores"]
+        if "predictor_metadata" in item or "score_contract" in item or "score_fingerprint" in item:
+            raise LoopInputError("candidate-level score declarations are unsupported; use round.predictor_metadata")
+        try:
+            scores = _extract_scores(item, DEFAULT_SCORE_PREFIX, _score_map_fields({}),
+                                     f"candidate {item['candidate_id']!r}")
+        except ValueError as exc:
+            raise LoopInputError(f"invalid candidate scores: {exc}")
+        item["predictor_scores"] = scores
+        item["predictor_coverage"] = sorted(scores)
+        item["consensus"] = mean(scores.values()) if scores else None
+        item["n_scores"] = len(scores)
     return normalized
 
 
@@ -240,7 +254,7 @@ def _recompute_operator_stats(campaign_dir):
     plans_dir = _paths(campaign_dir)["plans"]
     if os.path.isdir(plans_dir):
         for name in sorted(os.listdir(plans_dir)):
-            if not name.endswith("_plan.json"):
+            if not (name.endswith("_plan.json") or name.endswith("_plan_v3.json")):
                 continue
             path = os.path.join(plans_dir, name)
             try:
@@ -263,6 +277,18 @@ def _log(args):
         raise LoopInputError("round must be an object")
     round_id = _nonnegative_int(raw_round.get("round_id"), "round.round_id")
     candidates = _normalize_candidates(raw_round.get("candidates"))
+    if "score_contract" in raw_round or "score_fingerprint" in raw_round:
+        raise LoopInputError("round score contract is derived from round.predictor_metadata")
+    from score_contract import ScoreContractError, digest, validate_predictor_metadata
+    actual_predictors = sorted({key for item in candidates for key in item["predictor_scores"]})
+    try:
+        contract = validate_predictor_metadata(raw_round.get("predictor_metadata"), actual_predictors)[2]
+    except ScoreContractError as exc:
+        raise LoopInputError(f"{exc.code}: {exc}")
+    for item in candidates:
+        complete = bool(item["predictor_scores"]) and set(item["predictor_scores"]) == set(actual_predictors)
+        item["comparability"] = ("comparable" if complete else "missing_predictor") if contract["comparability"] == "comparable" else "unknown"
+        item["score_fingerprint"] = contract["fingerprint"] if item["comparability"] == "comparable" else None
 
     existing = _load_campaign(campaign_dir, required=False)
     indexed_rounds = [] if existing is None else existing["rounds"]
@@ -279,7 +305,10 @@ def _log(args):
         "round_id": round_id,
         "candidates": candidates,
         "notes": raw_round.get("notes"),
+        "score_contract": contract,
+        "predictor_metadata": contract.get("predictor_metadata"),
     }
+    record["round_content_sha256"] = digest(record)
     _atomic_json(target_path, record)
 
     campaign = existing or {
@@ -309,21 +338,22 @@ def _parse_params(raw):
         raw = {}
     if not _is_mapping(raw):
         raise LoopInputError("params must be an object")
-    unknown = sorted(set(raw) - set(DEFAULT_PARAMS))
+    unknown = sorted(set(raw) - set(DEFAULT_PARAMS) - DEPRECATED_PARAMS)
     if unknown:
         raise LoopInputError(f"unknown params: {', '.join(unknown)}")
     params = dict(DEFAULT_PARAMS)
-    params.update(raw)
+    params.update({key: value for key, value in raw.items() if key in DEFAULT_PARAMS})
+    params["deprecated_params_ignored"] = sorted(set(raw) & DEPRECATED_PARAMS)
     for name in ("cloud_budget_round", "max_parents", "min_parents", "per_parent_local", "cloud_per_parent", "max_rounds"):
         minimum = 1 if name in ("max_parents", "min_parents", "per_parent_local", "cloud_per_parent", "max_rounds") else 0
         params[name] = _nonnegative_int(params[name], f"params.{name}", minimum=minimum)
     if params["min_parents"] > params["max_parents"]:
         raise LoopInputError("params.min_parents cannot exceed params.max_parents")
-    for name in ("min_consensus_pctl", "diversity_threshold"):
+    for name in ("min_consensus_pctl", "diversity_threshold", "promotion_rate_stop_threshold"):
         params[name] = _finite_number(params[name], f"params.{name}", minimum=0.0, maximum=1.0)
     if params["diversity_threshold"] == 0:
         raise LoopInputError("params.diversity_threshold must be > 0")
-    for name in ("promotion_delta", "improvement_epsilon"):
+    for name in ("consensus_promotion_delta", "consensus_improvement_epsilon"):
         params[name] = _finite_number(params[name], f"params.{name}", minimum=0.0)
     return params
 
@@ -348,10 +378,10 @@ def _cluster_assignments(items, threshold, *, chronological=False):
         return {}, set()
     if chronological:
         ordered = sorted(sequenced, key=lambda pair: (
-            pair[1]["round_id"], -pair[1]["consensus_percentile"], pair[1]["candidate_id"]
+            pair[1]["round_id"], -(pair[1]["consensus_percentile"] or 0.0), pair[1]["candidate_id"]
         ))
     else:
-        ordered = sorted(sequenced, key=lambda pair: (-pair[1]["consensus_percentile"], pair[1]["candidate_id"]))
+        ordered = sorted(sequenced, key=lambda pair: (-(pair[1]["consensus_percentile"] or 0.0), pair[1]["candidate_id"]))
     from seq_analysis import cluster_sequences
     result = cluster_sequences([item["sequence"] for _, item in ordered], threshold=threshold)
     if result.get("status") != "ok":
@@ -368,32 +398,70 @@ def _cluster_assignments(items, threshold, *, chronological=False):
     return assignments, representative_keys
 
 
-def _prepare_history(history, diversity_threshold, promotion_delta):
-    from rank_tools import rank_consensus
+def _pair_comparison(old, new):
+    """One shared gate for parent, lineage and campaign score comparisons."""
+    from score_contract import comparison_delta
+    if old is None or new is None:
+        return "NO_PAIR", None
+    if new["round_id"] != old["round_id"] + 1:
+        return "NONADJACENT_ROUNDS", None
+    if old.get("qc_status") == "FAIL" or new.get("qc_status") == "FAIL":
+        return "QC_FAIL", None
+    if old.get("comparability") != "comparable" or new.get("comparability") != "comparable":
+        return "UNVERIFIED_SCORE_SCHEMA", None
+    if (old.get("score_fingerprint") != new.get("score_fingerprint")
+            or old.get("predictor_coverage") != new.get("predictor_coverage")):
+        return "INCOMPARABLE_SCORE_SCHEMA", None
+    if old.get("consensus") is None or new.get("consensus") is None:
+        return "NO_SCORE", None
+    return "comparable", comparison_delta(new["consensus"], old["consensus"])
 
-    rounds = []
-    all_items = []
-    by_round_id = {}
+
+def _prepare_history(history, diversity_threshold, promotion_delta):
+    from rank_tools import _extract_scores, _score_map_fields, DEFAULT_SCORE_PREFIX
+    from score_contract import ScoreContractError, verify_report, comparison_threshold
+
+    rounds, all_items, by_round_id = [], [], {}
     for record in history:
         round_id = record["round_id"]
-        source = record["candidates"]
-        ranked = rank_consensus({"candidates": source})["ranking"]
-        ranking_by_id = {row["candidate_id"]: row for row in ranked}
         items = []
-        for source_item in source:
-            row = ranking_by_id[source_item["candidate_id"]]
+        for source_item in record["candidates"]:
             item = dict(source_item)
-            item["consensus"] = row["consensus"]
-            item["predictor_scores"] = row["predictor_scores"]
-            item["n_scores"] = row["n_scores"]
-            item["uncertainty"] = pstdev(row["predictor_scores"].values()) if len(row["predictor_scores"]) >= 2 else 0.0
+            try:
+                scores = _extract_scores(item, DEFAULT_SCORE_PREFIX, _score_map_fields({}),
+                                         f"candidate {item['candidate_id']!r}")
+            except ValueError as exc:
+                raise LoopInputError(f"invalid historical scores: {exc}")
+            if "round_content_sha256" in record and scores != item.get("predictor_scores"):
+                raise LoopInputError(f"round {round_id} stored predictor scores differ from source")
+            item["predictor_scores"] = scores
+            item["predictor_coverage"] = sorted(scores)
+            item["consensus"] = mean(scores.values()) if scores else None
+            item["n_scores"] = len(scores)
+            item["uncertainty"] = pstdev(scores.values()) if len(scores) >= 2 else 0.0
             item["round_id"] = round_id
             item["_key"] = (round_id, item["candidate_id"])
             items.append(item)
-        percentiles = _percentiles(items)
+        actual = sorted({key for item in items for key in item["predictor_scores"]})
+        contract = record.get("score_contract") if "round_content_sha256" in record else None
+        if contract is not None:
+            try:
+                contract = verify_report(contract, actual)
+            except ScoreContractError as exc:
+                raise LoopInputError(f"round {round_id} {exc.code}: {exc}")
         for item in items:
-            item["consensus_percentile"] = percentiles[item["candidate_id"]]
-        rounds.append({"round_id": round_id, "items": items})
+            full = bool(item["predictor_scores"]) and set(item["predictor_scores"]) == set(actual)
+            item["comparability"] = ("comparable" if full else "missing_predictor") if contract and contract["comparability"] == "comparable" else "unknown"
+            item["score_fingerprint"] = contract["fingerprint"] if item["comparability"] == "comparable" else None
+        scored = [item for item in items if item["consensus"] is not None]
+        percentiles = _percentiles(scored) if scored else {}
+        for item in items:
+            item["consensus_percentile"] = percentiles.get(item["candidate_id"])
+        round_status = ("UNVERIFIED_SCORE_SCHEMA" if contract is None or contract["comparability"] != "comparable"
+                        else "comparable" if all(i["comparability"] == "comparable" for i in items)
+                        else "INCOMPARABLE_SCORE_SCHEMA")
+        rounds.append({"round_id": round_id, "items": items, "score_contract": contract,
+                       "schema_status": round_status})
         all_items.extend(items)
         by_round_id[round_id] = {item["candidate_id"]: item for item in items}
 
@@ -406,14 +474,11 @@ def _prepare_history(history, diversity_threshold, promotion_delta):
         parent_id = item.get("parent_id")
         if not parent_id:
             return None
-        prior_rounds = [rid for rid in by_round_id if rid < item["round_id"]]
-        for round_id in sorted(prior_rounds, reverse=True):
-            found = by_round_id[round_id].get(parent_id)
+        for prior_id in sorted((rid for rid in by_round_id if rid < item["round_id"]), reverse=True):
+            found = by_round_id[prior_id].get(parent_id)
             if found is not None:
                 return found
         return None
-
-    lookup = {item["_key"]: item for item in all_items}
 
     def lineage(item):
         visited = set()
@@ -428,51 +493,66 @@ def _prepare_history(history, diversity_threshold, promotion_delta):
             current = parent
         return f"lineage:r{current['round_id']}:{current['candidate_id']}"
 
+    threshold = comparison_threshold(promotion_delta)
     for item in all_items:
         item["lineage_id"] = lineage(item)
-        item["parent_candidate"] = find_parent(item)
-        item["promoted"] = bool(
-            item["parent_candidate"] is not None
-            and (
-                item["consensus_percentile"] >= item["parent_candidate"]["consensus_percentile"] + promotion_delta
-                or (item["consensus_percentile"] >= 0.90 and item["new_cluster"])
-            )
-        )
+        parent = find_parent(item)
+        item["parent_candidate"] = parent
+        status, delta = _pair_comparison(parent, item)
+        item["promotion_status"] = status
+        item["promotion_delta"] = float(delta) if delta is not None else None
+        item["promoted"] = bool(delta >= threshold) if status == "comparable" else None
 
-    for round_item in rounds:
-        items = round_item["items"]
-        ordered = sorted(items, key=lambda item: (-item["consensus"], item["candidate_id"]))
-        round_item["best_consensus"] = ordered[0]["consensus"]
-        round_item["median_consensus"] = median(item["consensus"] for item in items)
-        round_item["best_percentile"] = max(item["consensus_percentile"] for item in items)
-        round_item["best_candidate_id"] = ordered[0]["candidate_id"]
-        round_item["promoted_count"] = sum(1 for item in items if item["promoted"])
-        round_item["promoted_rate"] = round_item["promoted_count"] / len(items) if items else 0.0
+    for row in rounds:
+        items = row["items"]
+        scored = sorted((i for i in items if i["consensus"] is not None),
+                        key=lambda i: (-i["consensus"], i["candidate_id"]))
+        eligible = [i for i in scored if i.get("qc_status") != "FAIL" and i["comparability"] == "comparable"]
+        row["best_consensus"] = scored[0]["consensus"] if scored else None
+        row["median_consensus"] = median(i["consensus"] for i in scored) if scored else None
+        row["best_percentile"] = scored[0]["consensus_percentile"] if scored else None
+        row["best_candidate_id"] = scored[0]["candidate_id"] if scored else None
+        row["best_eligible_item"] = eligible[0] if eligible else None
+        row["best_consensus_eligible"] = eligible[0]["consensus"] if eligible else None
+        evaluated = [i for i in items if i["promotion_status"] == "comparable"]
+        row["promoted_count"] = sum(i["promoted"] is True for i in evaluated)
+        row["promotion_denominator"] = len(evaluated)
+        row["promotion_unknown_count"] = sum(i["parent_candidate"] is not None and i["promotion_status"] != "comparable" for i in items)
+        row["promoted_rate"] = row["promoted_count"] / len(evaluated) if evaluated else None
     return rounds, all_items, find_parent
 
 
-def _stop_lineages(rounds, all_items):
+def _score_schema_status(rounds):
+    statuses = {row["schema_status"] for row in rounds}
+    if statuses == {"UNVERIFIED_SCORE_SCHEMA"}:
+        return "UNVERIFIED_SCORE_SCHEMA"
+    if statuses != {"comparable"}:
+        return "INCOMPARABLE_SCORE_SCHEMA"
+    fingerprints = {row["score_contract"]["fingerprint"] for row in rounds}
+    return "comparable" if len(fingerprints) == 1 else "INCOMPARABLE_SCORE_SCHEMA"
+
+
+def _stop_lineages(rounds, all_items, improvement_epsilon=0.02):
+    from score_contract import comparison_threshold
+    threshold = comparison_threshold(improvement_epsilon)
     lineage_ids = sorted({item["lineage_id"] for item in all_items})
     stopped = []
     for lineage_id in lineage_ids:
         first_index = next(i for i, row in enumerate(rounds) if any(x["lineage_id"] == lineage_id for x in row["items"]))
-        best = None
         trail = []
+        previous = None
         for row in rounds[first_index:]:
-            members = [item for item in row["items"] if item["lineage_id"] == lineage_id]
+            members = [item for item in row["items"] if item["lineage_id"] == lineage_id
+                       and item["qc_status"] != "FAIL" and item["comparability"] == "comparable"]
             new_cluster = any(item["new_cluster"] for item in members)
-            if members:
-                current = max(item["consensus_percentile"] for item in members)
-                delta = None if best is None else current - best
-                best = current if best is None else max(best, current)
-            else:
-                current = best
-                delta = 0.0 if best is not None else None
-            trail.append({"delta": delta, "new_cluster": new_cluster})
-        if len(trail) >= 3:
-            recent = trail[-2:]
-            if all(point["delta"] is not None and point["delta"] < 0.05 and not point["new_cluster"] for point in recent):
-                stopped.append(lineage_id)
+            current = max(members, key=lambda item: (item["consensus"], item["candidate_id"])) if members else None
+            status, delta = _pair_comparison(previous, current)
+            trail.append({"status": status, "delta": delta, "new_cluster": new_cluster})
+            previous = current
+        if len(trail) >= 3 and all(point["status"] == "comparable"
+                                   and point["delta"] < threshold
+                                   and not point["new_cluster"] for point in trail[-2:]):
+            stopped.append(lineage_id)
     return stopped
 
 
@@ -481,6 +561,7 @@ def _campaign_summary(rounds, all_items, params):
     high_confidence = sum(
         1 for item in all_items
         if item.get("qc_status", "WARN") != "FAIL"
+        and item["consensus_percentile"] is not None
         and item["consensus_percentile"] >= max(params["min_consensus_pctl"], 0.80)
     )
     return {
@@ -498,21 +579,28 @@ def _campaign_summary(rounds, all_items, params):
         ],
         "promoted_rate_per_round": [
             {"round": row["round_id"], "rate": row["promoted_rate"],
-             "promoted": row["promoted_count"], "n_candidates": len(row["items"])}
+             "promoted": row["promoted_count"], "denominator": row["promotion_denominator"],
+             "unknown_pairs": row["promotion_unknown_count"], "n_candidates": len(row["items"])}
             for row in rounds
         ],
+        "score_comparison_policy": "consensus_decimal_9_places_half_even",
     }
 
 
-def _stop_reasons(rounds, all_items, summary, params):
+def _stop_reasons(rounds, all_items, summary, params, schema_status=None):
+    from score_contract import comparison_threshold
     reasons = []
+    rate_threshold = params["promotion_rate_stop_threshold"]
     rates = [row["promoted_rate"] for row in rounds]
-    if len(rates) >= 2 and all(rate < 0.05 for rate in rates[-2:]):
-        reasons.append("promoted_rate_below_5pct_for_2_rounds")
-    bests = [row["best_percentile"] for row in rounds]
-    improvements = [bests[i] - bests[i - 1] for i in range(1, len(bests))]
-    if len(improvements) >= 2 and all(delta < params["improvement_epsilon"] for delta in improvements[-2:]):
-        reasons.append("best_percentile_improvement_below_epsilon_for_2_rounds")
+    if len(rates) >= 2 and all(rate is not None and rate < rate_threshold for rate in rates[-2:]):
+        reasons.append("promoted_rate_below_threshold_for_2_rounds")
+    if len(rounds) >= 3:
+        first, second, third = rounds[-3:]
+        s1, d1 = _pair_comparison(first["best_eligible_item"], second["best_eligible_item"])
+        s2, d2 = _pair_comparison(second["best_eligible_item"], third["best_eligible_item"])
+        threshold = comparison_threshold(params["consensus_improvement_epsilon"])
+        if s1 == s2 == "comparable" and d1 < threshold and d2 < threshold:
+            reasons.append("best_consensus_improvement_below_epsilon_for_2_rounds")
     if summary["high_confidence_eligible_candidates"] >= 100:
         reasons.append("100_high_confidence_eligible_candidates_reached")
     if len(rounds) >= params["max_rounds"]:
@@ -597,11 +685,15 @@ def _select_parents(latest_items, params, stop_lineages):
     working = []
     fail_count = 0
     below_floor_count = 0
+    no_score_count = 0
     for source in latest_items:
         item = dict(source)
         item["round_cluster"] = all_round_clusters.get(item["_key"])
         if item.get("qc_status", "WARN") == "FAIL":
             fail_count += 1
+            continue
+        if item["consensus_percentile"] is None:
+            no_score_count += 1
             continue
         if item["consensus_percentile"] < params["min_consensus_pctl"]:
             below_floor_count += 1
@@ -721,6 +813,7 @@ def _select_parents(latest_items, params, stop_lineages):
             "n_candidates": len(latest_items),
             "eligible": len(working),
             "excluded_qc_fail": fail_count,
+            "excluded_no_score": no_score_count,
             "excluded_below_consensus_percentile": below_floor_count,
             "excluded_stopped_lineages": len(stopped),
             "min_consensus_pctl": params["min_consensus_pctl"],
@@ -739,16 +832,20 @@ def _next(args):
     history = _load_history(campaign_dir, campaign)
     if not history:
         raise LoopInputError("cannot plan next round: campaign has no logged rounds")
-    rounds, all_items, _ = _prepare_history(history, params["diversity_threshold"], params["promotion_delta"])
+    rounds, all_items, _ = _prepare_history(history, params["diversity_threshold"],
+                                            params["consensus_promotion_delta"])
+    schema_status = _score_schema_status(rounds)
     summary = _campaign_summary(rounds, all_items, params)
-    stop_lineages = _stop_lineages(rounds, all_items)
-    stop_reasons = _stop_reasons(rounds, all_items, summary, params)
+    stop_lineages = _stop_lineages(rounds, all_items, params["consensus_improvement_epsilon"])
+    stop_reasons = _stop_reasons(rounds, all_items, summary, params, schema_status)
     latest = rounds[-1]
     selection = _select_parents(latest["items"], params, set(stop_lineages))
     local_sequences = sum(parent["n_local"] for parent in selection["parents"])
     cloud_predictions = sum(parent["n_cloud"] for parent in selection["parents"])
     round_plan = {
         "round": latest["round_id"] + 1,
+        "policy_version": LOOP_POLICY_VERSION,
+        "score_schema_status": schema_status,
         "parents": selection["parents"],
         "stop_lineages": stop_lineages,
         "stop_recommended": bool(stop_reasons),
@@ -762,11 +859,9 @@ def _next(args):
         "warnings": selection["warnings"],
         "params": params,
     }
-    plan_path = os.path.join(_paths(campaign_dir)["plans"], f"round_{latest['round_id'] + 1}_plan.json")
+    plan_path = os.path.join(_paths(campaign_dir)["plans"], f"round_{latest['round_id'] + 1}_plan_v3.json")
     output = {"ok": True, "round_plan": round_plan, "campaign_summary": summary, "plan_path": plan_path}
     _atomic_json(plan_path, output)
-    campaign["operator_stats"] = _recompute_operator_stats(campaign_dir)
-    _atomic_json(_paths(campaign_dir)["campaign"], campaign)
     return output
 
 
@@ -776,7 +871,7 @@ def _latest_plan(campaign_dir):
         return None
     matches = []
     for name in os.listdir(plans_dir):
-        match = re.fullmatch(r"round_(\d+)_plan\.json", name)
+        match = re.fullmatch(r"round_(\d+)_plan_v3\.json", name)
         if match:
             matches.append((int(match.group(1)), os.path.join(plans_dir, name)))
     return max(matches, default=(None, None), key=lambda item: item[0])[1]
@@ -793,29 +888,39 @@ def _status(args):
             "promoted_rate_per_round": [], "latest_plan_path": _latest_plan(campaign_dir),
             "recommendation": "补数据",
         }}
-    params = _parse_params(None)
-    rounds, all_items, _ = _prepare_history(history, params["diversity_threshold"], params["promotion_delta"])
-    summary = _campaign_summary(rounds, all_items, params)
     latest_plan = _latest_plan(campaign_dir)
-    stop = _stop_reasons(rounds, all_items, summary, params)
+    saved_plan = _read_json(latest_plan, "latest plan") if latest_plan else None
+    planned_round = (saved_plan or {}).get("round_plan", {}) if _is_mapping(saved_plan) else {}
+    if (planned_round.get("policy_version") == LOOP_POLICY_VERSION
+            and planned_round.get("round") == history[-1]["round_id"] + 1):
+        params = _parse_params({key: value for key, value in (planned_round.get("params") or {}).items()
+                                if key in DEFAULT_PARAMS})
+    else:
+        params = _parse_params(None)
+    rounds, all_items, _ = _prepare_history(history, params["diversity_threshold"],
+                                            params["consensus_promotion_delta"])
+    schema_status = _score_schema_status(rounds)
+    summary = _campaign_summary(rounds, all_items, params)
+    stop = _stop_reasons(rounds, all_items, summary, params, schema_status)
     if not rounds[-1]["items"]:
         recommendation = "补数据"
     elif stop:
         recommendation = "停止"
     else:
-        last_plan = _read_json(latest_plan, "latest plan") if latest_plan else None
-        planned_round = (last_plan or {}).get("round_plan", {}).get("round") if _is_mapping(last_plan) else None
-        if planned_round == rounds[-1]["round_id"] + 1 and (last_plan.get("round_plan") or {}).get("stop_recommended"):
+        if planned_round.get("round") == rounds[-1]["round_id"] + 1 and planned_round.get("stop_recommended"):
             recommendation = "停止"
         else:
             latest_eligible = sum(
                 1 for item in rounds[-1]["items"]
                 if item.get("qc_status", "WARN") != "FAIL"
+                and item["consensus_percentile"] is not None
                 and item["consensus_percentile"] >= params["min_consensus_pctl"]
             )
             recommendation = "补数据" if latest_eligible < params["min_parents"] else "继续"
     return {"ok": True, "status": {
         "campaign_dir": campaign_dir,
+        "policy_version": LOOP_POLICY_VERSION,
+        "score_schema_status": schema_status,
         **summary,
         "latest_plan_path": latest_plan,
         "recommendation": recommendation,

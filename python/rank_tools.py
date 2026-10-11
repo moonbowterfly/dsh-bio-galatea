@@ -8,12 +8,17 @@ not installed.
 """
 
 import csv
+import hashlib
 import json
 import math
 import os
+import shutil
 import tempfile
 from collections.abc import Mapping, Sequence
 from statistics import mean, median
+
+from score_contract import (ScoreContractError, SCORE_CONTRACT_VERSION, canonical_json,
+                            digest, validate_predictor_metadata, verify_report)
 
 
 DEFAULT_SCORE_PREFIX = "ipsae_min_"
@@ -30,6 +35,7 @@ COMPUTED_FIELDS = {
     "tier",
     "predictor_scores",
     "batch_id",
+    "predictor_coverage", "comparability", "score_fingerprint",
 }
 
 
@@ -229,6 +235,7 @@ def _rank_rows(candidates, args, allow_existing_consensus=False):
             "max_score": max_score,
             "tier": tier_for(consensus),
             "predictor_scores": scores,
+            "predictor_coverage": sorted(scores),
         })
         staged.append((consensus, index, normalized))
 
@@ -310,12 +317,150 @@ def _read_csv(path, label="csv_path"):
             reader = csv.DictReader(handle)
             if not reader.fieldnames:
                 raise RankInputError(f"CSV file has no header: {resolved}")
+            if len(reader.fieldnames) != len(set(reader.fieldnames)):
+                raise RankInputError(f"CSV file has duplicate headers: {resolved}")
             rows = list(reader)
     except OSError as exc:
         raise RankInputError(f"could not read CSV file {resolved}: {exc}")
     if not rows:
         raise RankInputError(f"CSV file has no candidate rows: {resolved}")
     return rows, resolved
+
+
+def _rank_identity(rows):
+    """Bind computed rank fields and actual score maps, independent of CSV scalar types."""
+    return digest([{"candidate_id": row["candidate_id"], "predictor_scores": row["predictor_scores"],
+                    "consensus": row["consensus"], "n_scores": row["n_scores"],
+                    "min_score": row["min_score"], "max_score": row["max_score"],
+                    "tier": row["tier"], "rank": row["rank"]} for row in rows])
+
+
+def _sha256_file(path):
+    with open(path, "rb") as handle:
+        return "sha256:" + hashlib.sha256(handle.read()).hexdigest()
+
+
+def _csv_sidecar(path):
+    sidecar_path = path + ".score-contract.json"
+    if not os.path.exists(sidecar_path):
+        return None
+    try:
+        with open(sidecar_path, encoding="utf-8") as handle:
+            sidecar = json.load(handle)
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RankInputError(f"invalid score contract sidecar {sidecar_path}: {exc}")
+    if not isinstance(sidecar, dict) or sidecar.get("csv_sha256") != _sha256_file(path):
+        raise RankInputError("SCHEMA_SOURCE_TAMPERED: CSV bytes differ from sidecar")
+    return sidecar
+
+
+def _contract_for_rows(rows, metadata):
+    coverages = [set(row["predictor_scores"]) for row in rows]
+    actual = sorted(set().union(*coverages))
+    if metadata is not None and any(c != set(actual) for c in coverages):
+        raise ScoreContractError("SCHEMA_COVERAGE_MISMATCH", "typed candidates have different actual predictor coverage")
+    return validate_predictor_metadata(metadata, actual)[2]
+
+
+def _looks_derived(candidates):
+    return any(isinstance(row, Mapping) and
+               ("rank" in row or "consensus" in row or "score_fingerprint" in row)
+               for row in candidates)
+
+
+def _legacy_source_or_verified(rows, source):
+    report = source.get("score_contract")
+    if isinstance(report, dict) and report.get("contract") == SCORE_CONTRACT_VERSION:
+        return _verify_source(rows, report, source.get("ranking_sha256"))
+    if any(row.get("score_fingerprint") for row in source.get("ranking", [])):
+        raise ScoreContractError("SCHEMA_SOURCE_MISSING", "R2 typed ranking lost its source contract")
+    return _contract_for_rows(rows, None)
+
+
+def _verify_source(rows, contract, identity=None):
+    if not isinstance(contract, dict):
+        raise ScoreContractError("SCHEMA_SOURCE_MISSING", "derived source has no score contract")
+    if not isinstance(identity, str) or not identity.startswith("sha256:"):
+        raise ScoreContractError("SCHEMA_SOURCE_TAMPERED", "derived source has no ranking content identity")
+    coverages = [set(row["predictor_scores"]) for row in rows]
+    actual = sorted(set().union(*coverages))
+    if contract.get("comparability") == "comparable" and any(c != set(actual) for c in coverages):
+        raise ScoreContractError("SCHEMA_COVERAGE_MISMATCH", "typed source candidate coverage differs")
+    verified = verify_report(contract, actual)
+    if identity != _rank_identity(rows):
+        raise ScoreContractError("SCHEMA_SOURCE_TAMPERED", "source ranking content differs")
+    return verified
+
+
+def _write_sidecar(path, ranking, contract):
+    sidecar_path = path + ".score-contract.json"
+    data = {"version": SCORE_CONTRACT_VERSION, "csv_sha256": _sha256_file(path),
+            "ranking_sha256": _rank_identity(ranking), "score_contract": contract}
+    parent = os.path.dirname(path)
+    temp_path = None
+    try:
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", newline="\n", dir=parent,
+                                         prefix=".galatea-contract-", suffix=".tmp", delete=False) as handle:
+            temp_path = handle.name
+            handle.write(canonical_json(data) + "\n")
+        os.replace(temp_path, sidecar_path)
+        temp_path = None
+    except OSError as exc:
+        raise RankInputError(f"could not write score contract sidecar {sidecar_path}: {exc}")
+    finally:
+        if temp_path and os.path.exists(temp_path):
+            os.unlink(temp_path)
+    return sidecar_path
+
+
+def _write_ranking_bundle(ranking, output_csv, overwrite, contract):
+    """Stage CSV and bound descriptor before replacing either destination."""
+    if not isinstance(output_csv, str) or not output_csv.strip():
+        raise RankInputError("output_csv must be a non-empty file path")
+    resolved = os.path.abspath(os.path.expanduser(output_csv))
+    if os.path.isdir(resolved):
+        raise RankInputError(f"output_csv is a directory: {resolved}")
+    if os.path.exists(resolved) and not overwrite:
+        raise RankInputError(f"output_csv already exists: {resolved} (set overwrite=true)")
+    parent = os.path.dirname(resolved)
+    os.makedirs(parent, exist_ok=True)
+    descriptor = resolved + ".score-contract.json"
+    stage = stage_descriptor = backup_csv = backup_descriptor = None
+    try:
+        fd, stage = tempfile.mkstemp(prefix=".galatea-stage-", suffix=".csv", dir=parent)
+        os.close(fd)
+        _write_ranking_csv(ranking, stage, True)
+        stage_descriptor = _write_sidecar(stage, ranking, contract)
+        if os.path.isfile(resolved):
+            fd, backup_csv = tempfile.mkstemp(prefix=".galatea-backup-", dir=parent)
+            os.close(fd)
+            shutil.copy2(resolved, backup_csv)
+        if os.path.isfile(descriptor):
+            fd, backup_descriptor = tempfile.mkstemp(prefix=".galatea-backup-", dir=parent)
+            os.close(fd)
+            shutil.copy2(descriptor, backup_descriptor)
+        try:
+            os.replace(stage, resolved)
+            stage = None
+            os.replace(stage_descriptor, descriptor)
+            stage_descriptor = None
+        except OSError:
+            if backup_csv is not None:
+                os.replace(backup_csv, resolved)
+                backup_csv = None
+            elif os.path.isfile(resolved):
+                os.unlink(resolved)
+            if backup_descriptor is not None:
+                os.replace(backup_descriptor, descriptor)
+                backup_descriptor = None
+            raise
+    except OSError as exc:
+        raise RankInputError(f"could not write rank CSV and contract bundle {resolved}: {exc}")
+    finally:
+        for path in (stage, stage_descriptor, backup_csv, backup_descriptor):
+            if path and os.path.isfile(path):
+                os.unlink(path)
+    return resolved, descriptor
 
 
 def _find_input(args):
@@ -351,27 +496,52 @@ def rank_consensus(args):
     Args accepts exactly one source: ``candidates`` (JSON array/object) or
     ``csv_path`` (UTF-8 CSV with headers).  Flat columns matching
     ``score_prefix`` and nested score maps such as ``scores`` are both accepted.
+
+    GL-3：可选 ``predictor_metadata``（typed predictor 元数据，key 精确对应实际预测器）。
+    提供则校验完整性与可比较性、产出 fingerprint；不提供则 legacy（comparability=unknown、
+    fingerprint=null，不能用于跨轮分数判断）。
     """
     if not isinstance(args, Mapping):
         raise RankInputError("rank.consensus args must be an object")
     candidates, input_info = _find_input(args)
     ranking, coverage = _rank_rows(candidates, args)
-    return {
+    sidecar = _csv_sidecar(input_info["csv_path"]) if input_info["kind"] == "csv" else None
+    if sidecar is not None:
+        if args.get("predictor_metadata") is not None:
+            raise ScoreContractError("SCHEMA_SOURCE_OVERRIDE", "derived CSV contract cannot be redeclared")
+        contract = _verify_source(ranking, sidecar.get("score_contract"), sidecar.get("ranking_sha256"))
+        input_info["sidecar_path"] = input_info["csv_path"] + ".score-contract.json"
+    else:
+        if args.get("predictor_metadata") is not None and _looks_derived(candidates):
+            raise ScoreContractError("SCHEMA_SOURCE_OVERRIDE", "old derived CSV cannot receive a new typed declaration")
+        contract = _contract_for_rows(ranking, args.get("predictor_metadata"))
+    for row in ranking:
+        row["comparability"] = contract["comparability"]
+        row["score_fingerprint"] = contract["fingerprint"]
+    result = {
         "algorithm": "equal_weight_mean",
         "score_prefix": _score_prefix(args),
         "input": input_info,
         "ranking": ranking,
         "summary": _summary(ranking, coverage),
+        "score_contract": contract,
+        "ranking_sha256": _rank_identity(ranking),
     }
+    if args.get("output_csv") is not None:
+        output, sidecar = _write_ranking_bundle(ranking, args["output_csv"], args.get("overwrite", False), contract)
+        result["output_csv"] = output
+        result["score_contract_sidecar"] = sidecar
+        result["output_csv_sha256"] = _sha256_file(output)
+    return result
 
 
 def _batch_source(batch, index):
     default_id = f"batch_{index + 1:03d}"
     if isinstance(batch, str):
         rows, resolved = _read_csv(batch, f"batches[{index}]")
-        return default_id, rows, {"kind": "csv", "csv_path": resolved}
+        return default_id, rows, {"kind": "csv", "csv_path": resolved}, _csv_sidecar(resolved), None
     if isinstance(batch, Sequence) and not isinstance(batch, (str, bytes, bytearray)):
-        return default_id, list(batch), {"kind": "json"}
+        return default_id, list(batch), {"kind": "json"}, None, None
     if not isinstance(batch, Mapping):
         raise RankInputError(f"batches[{index}] must be an object, candidate list, or CSV path")
 
@@ -382,7 +552,7 @@ def _batch_source(batch, index):
 
     source = batch.get("result") if isinstance(batch.get("result"), Mapping) else batch
     if "ranking" in source and source["ranking"] is not None:
-        return batch_id, _parse_json_candidates(source["ranking"], f"batches[{index}].ranking"), {"kind": "ranking"}
+        return batch_id, _parse_json_candidates(source["ranking"], f"batches[{index}].ranking"), {"kind": "ranking"}, source, None
 
     candidate_keys = [(key, source[key]) for key in ("candidates", "rows", "input_json")
                       if key in source and source[key] is not None]
@@ -394,10 +564,10 @@ def _batch_source(batch, index):
         )
     if candidate_keys:
         key, value = candidate_keys[0]
-        return batch_id, _parse_json_candidates(value, f"batches[{index}].{key}"), {"kind": "json"}
+        return batch_id, _parse_json_candidates(value, f"batches[{index}].{key}"), {"kind": "json"}, None, source.get("predictor_metadata")
     key, value = path_keys[0]
     rows, resolved = _read_csv(value, f"batches[{index}].{key}")
-    return batch_id, rows, {"kind": "csv", "csv_path": resolved}
+    return batch_id, rows, {"kind": "csv", "csv_path": resolved}, _csv_sidecar(resolved), source.get("predictor_metadata")
 
 
 def _csv_value(value):
@@ -469,6 +639,8 @@ def rank_aggregate(args):
     """
     if not isinstance(args, Mapping):
         raise RankInputError("rank.aggregate args must be an object")
+    if args.get("predictor_metadata") is not None:
+        raise ScoreContractError("SCHEMA_SOURCE_OVERRIDE", "aggregate requires each raw batch to declare its own predictor_metadata")
     batches = args.get("batches")
     if isinstance(batches, str):
         try:
@@ -486,15 +658,35 @@ def rank_aggregate(args):
     merged = []
     coverage = {}
     batch_info = []
+    contracts = []
     for index, batch in enumerate(batches):
-        batch_id, candidates, source_info = _batch_source(batch, index)
+        batch_id, candidates, source_info, source, raw_metadata = _batch_source(batch, index)
         batch_rows, batch_coverage = _rank_rows(candidates, args, allow_existing_consensus=True)
+        if source_info["kind"] == "ranking":
+            contract = _legacy_source_or_verified(batch_rows, source)
+        elif source_info["kind"] == "csv" and source is not None:
+            if raw_metadata is not None:
+                raise ScoreContractError("SCHEMA_SOURCE_OVERRIDE", "derived CSV contract cannot be redeclared")
+            contract = _verify_source(batch_rows, source.get("score_contract"), source.get("ranking_sha256"))
+        else:
+            if raw_metadata is not None and _looks_derived(candidates):
+                raise ScoreContractError("SCHEMA_SOURCE_OVERRIDE", "old derived source cannot receive a new typed declaration")
+            contract = _contract_for_rows(batch_rows, raw_metadata)
+        contracts.append(contract)
         for row in batch_rows:
             row["batch_id"] = batch_id
+            row["comparability"] = contract["comparability"]
+            row["score_fingerprint"] = contract["fingerprint"]
             merged.append(row)
         for predictor, count in batch_coverage.items():
             coverage[predictor] = coverage.get(predictor, 0) + count
-        batch_info.append({"batch_id": batch_id, **source_info, "n_candidates": len(batch_rows)})
+        batch_info.append({"batch_id": batch_id, **source_info, "n_candidates": len(batch_rows),
+                           "score_contract": contract, "ranking_sha256": _rank_identity(batch_rows)})
+
+    if len({item["comparability"] for item in contracts}) != 1:
+        raise ScoreContractError("SCHEMA_TYPED_LEGACY_MIX", "typed and legacy batches cannot be aggregated")
+    if contracts[0]["comparability"] == "comparable" and len({item["fingerprint"] for item in contracts}) != 1:
+        raise ScoreContractError("SCHEMA_INCOMPARABLE", "typed source fingerprints differ")
 
     # Do not average batch means or reuse a batch-local rank.  Reuse the same
     # stable global ordering rule on the fully concatenated candidate table.
@@ -502,7 +694,11 @@ def rank_aggregate(args):
     for rank, row in enumerate(merged, start=1):
         row["rank"] = rank
 
-    resolved_output = _write_ranking_csv(merged, output_csv, overwrite)
+    contract = contracts[0]
+    if contract["comparability"] == "comparable":
+        _contract_for_rows(merged, contract["predictor_metadata"])
+
+    resolved_output, sidecar_path = _write_ranking_bundle(merged, output_csv, overwrite, contract)
     duplicate_ids = sorted({
         row["candidate_id"] for row in merged
         if sum(other["candidate_id"] == row["candidate_id"] for other in merged) > 1
@@ -513,7 +709,11 @@ def rank_aggregate(args):
         "n_batches": len(batch_info),
         "batches": batch_info,
         "output_csv": resolved_output,
+        "output_csv_sha256": _sha256_file(resolved_output),
+        "score_contract_sidecar": sidecar_path,
         "ranking": merged,
+        "ranking_sha256": _rank_identity(merged),
+        "score_contract": contract,
         "summary": {
             **_summary(merged, coverage),
             "duplicate_candidate_ids": duplicate_ids,

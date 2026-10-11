@@ -101,6 +101,8 @@ npx -y @deepseek-ai/dsh plugin --profile web add @dsh-bio/dsh-bio-galatea
 | `galatea_budget` | 跨靶预算调度：三层配额、pilot shrinkage、密度门与 cap feasibility；handoff 仅产出 | 秒级 |
 | `galatea_coverage` | Campaign 覆盖审计：检查 generator/contact/backbone family、未消费 generator 和 quota；可输出确定性 rescue 计划 | 秒级 |
 
+`galatea_rank` 的 legacy 数值均值与排序仍可用，但返回 `comparability=unknown`、`fingerprint=null`，不能支持跨轮分数判断。typed 调用在 `predictor_metadata` 中为每个实际 key 提供非空字符串 `model_family/model_version/score_metric/score_version/direction/unit`；多个 key 各自声明 `same_scale=true`。本期只接受六个维度完全一致、`direction=higher` 且每个候选覆盖同一实际 key 集合的等权平均。`score_contract` 的指纹标识声明与聚合政策，不证明后端身份。`output_csv` 同时写字节绑定的 `.score-contract.json`；再次读取时验证 CSV、描述符和实际分数。`galatea_rank_aggregate` 对每批已排名结果核验来源合同；原始批次可在该批首次声明 metadata，顶层 metadata 不能覆盖来源。冲突先失败，再决定是否写 CSV。
+
 ## Campaign 覆盖审计（`galatea_coverage`）
 
 输入候选 CSV/JSONL（唯一 `design_id`、`target_id`），可选当前选择集、每靶配额和 config。工具审计零覆盖、单 generator/contact/backbone family、未消费 generator 与 quota 执行情况。`rescue=true` 时只输出确定性的 ADD/REPLACE 计划，不修改选择集；列映射可适配 contact family 与分数字段名。工具只读取指定候选维度和排序分数，不读取湿实验标签，也不接入 loop 或 portfolio 消费。
@@ -131,13 +133,13 @@ npx -y @deepseek-ai/dsh plugin --profile web add @dsh-bio/dsh-bio-galatea
 
 ## 设计迭代（`galatea_loop`）
 
-`galatea_loop` 是 predict-and-redesign 循环的决策与记账层；它只读写调用者指定的战役目录，不运行 MPNN、云端生成或预测。`action="log"` 接收非负 `round_id` 与候选列表，候选可带预测器分数字典或 `ipsae_min_*` 扁平分数，以及 `parent_id`、`sequence`、`structure_path`、`qc_status` 和 `flags`。结果分别写入 `campaign.json`、`rounds/round_<id>.json`；重复轮次必须显式设置 `overwrite=true`。
+`galatea_loop` 是 predict-and-redesign 循环的决策与记账层；它只读写调用者指定的战役目录，不运行 MPNN、云端生成或预测。`action="log"` 接收非负 `round_id` 与候选列表，候选可带预测器分数字典或 `ipsae_min_*` 扁平分数，以及 `parent_id`、`sequence`、`structure_path`、`qc_status` 和 `flags`。typed 来源必须在 `round.predictor_metadata` 声明每个实际 predictor 的 `model_family/model_version/score_metric/score_version/direction/unit`；多 predictor 还须逐项声明 `same_scale=true`。声明经规范化并与实际分数重算，来源身份仅证明调用者声明一致，不证明模型后端真实。缺失预测分数可作为 raw 状态保存，但该候选不可跨轮比较。结果写入 `campaign.json`、`rounds/round_<id>.json`；重复轮次必须显式设置 `overwrite=true`。
 
 `action="next"` 对最近一轮按 `rank_tools` 的 skip-missing 等权均值计算共识，再将轮内共识转成并列值使用平均秩的降序百分位（最高为 1.0）。不确定性是可用预测器分数的总体标准差；少于两个分数时记为 0 并返回警告。资格门为 `qc_status != FAIL` 且百分位不低于 `min_consensus_pctl`。合格者按约 60/20/20 分入 exploitation（百分位 ≥0.80，单谱系最多一个）、uncertainty（百分位 ≥0.50 且不确定性达到本轮最近秩 Q75）和 diversity（剩余合格者贪心 max-min；先优先不同序列簇，再比较较短序列前缀的同一性距离）。序列簇由 `seq_analysis.cluster_sequences` 计算。父本目标数为 `min(max_parents, max(min_parents, cloud_budget_round // 6))`，合格候选不足时按实际数量输出原因。
 
-每个父本的本地计划总数缺省 32，拆为 `fixed_interface_solublempnn` / `soluble_mpnn` / T=0.1 / 16 条、`anchor_fixed_solublempnn` / `soluble_mpnn` / T=0.12 / 8 条、`explore_mpnn` / `protein_mpnn` / T=0.25 / 8 条；云端每父本缺省计划 6 条。计划会注明缺少结构路径时界面冻结如何降级，以及缺少 contact-consensus 时 anchor 如何降级。谱系沿 `parent_id` 回溯；任一谱系连续两轮最佳百分位提升 <0.05 且没有新簇时列入 `stop_lineages`，不会再被选为父本。推广规则是子代百分位比父本至少高 0.05，或子代百分位 ≥0.90 且形成新簇。停止建议检查连续两轮推广率 <5%、连续两轮最佳百分位提升低于 `improvement_epsilon`、累计 ≥100 个高置信合格候选（百分位 ≥0.80）或达到 `max_rounds`。这些计划是确定性的占位建议，生成仍由 `galatea_mpnn` 或外部云平台完成。
+每个父本的本地计划总数缺省 32，拆为 `fixed_interface_solublempnn` / `soluble_mpnn` / T=0.1 / 16 条、`anchor_fixed_solublempnn` / `soluble_mpnn` / T=0.12 / 8 条、`explore_mpnn` / `protein_mpnn` / T=0.25 / 8 条；云端每父本缺省计划 6 条。计划会注明缺少结构路径时界面冻结如何降级，以及缺少 contact-consensus 时 anchor 如何降级。谱系沿 `parent_id` 回溯；跨轮 parent-child、谱系和战役最佳分数比较共用同一门：相邻轮次、实际预测器覆盖与 typed 指纹一致、QC 非 FAIL。分差使用共识值九位小数 half-even 政策；推广阈值为 `consensus_promotion_delta`，分数停滞为连续两个有效增量低于 `consensus_improvement_epsilon`，低推广率为连续两个有效比例低于 `promotion_rate_stop_threshold`。相等不触发停滞；未知/不兼容时分母与改善为 null，分数停止不评估。新簇仍是独立多样性信号，不把 raw 分数≥0.90 包装为质量推广。非分数 `max_rounds` 与累计合格候选门继续有效。计划是确定性的占位建议，生成仍由 `galatea_mpnn` 或外部云平台完成。
 
-常用默认参数：`cloud_budget_round=96`、`max_parents=16`、`min_parents=8`、`per_parent_local=32`、`cloud_per_parent=6`、`min_consensus_pctl=0.50`、`promotion_delta=0.05`、`max_rounds=6`、`improvement_epsilon=0.02`、`diversity_threshold=0.8`。`action="status"` 汇总各轮最佳/中位共识、候选与谱系数量、推广率、最新计划路径和继续/停止/补数据建议。
+常用默认参数：`cloud_budget_round=96`、`max_parents=16`、`min_parents=8`、`per_parent_local=32`、`cloud_per_parent=6`、`min_consensus_pctl=0.50`、`consensus_promotion_delta=0.05`、`consensus_improvement_epsilon=0.02`、`promotion_rate_stop_threshold=0.05`、`max_rounds=6`、`diversity_threshold=0.8`。旧 `promotion_delta/improvement_epsilon/improvement_abs` 兼容解析但忽略，不转换单位。新派生计划名为 `round_<id>_plan_v3.json`，旧计划和 raw 轮次不重写。`action="status"` 使用当前有效 v3 计划参数，汇总各轮最佳/中位共识、候选与谱系数量、推广率和分母、最新计划路径及继续/停止/补数据建议。
 
 ## 硬件边界（诚实声明）
 

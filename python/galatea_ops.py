@@ -65,6 +65,28 @@ def _sanitize_json(obj):
     return obj
 
 
+def _bridge_envelope(out):
+    """Return the only stdout envelope accepted by the TS tool consumer.
+
+    Domain modules may use ``ok`` internally to report their own result and
+    preserve that shape in files they write.  At this process boundary, however,
+    successful values must always be under ``result`` because ``callGalatea``
+    deliberately consumes only ``parsed.result``.  Keep a declared error as an
+    error, preserve already-normalized successes, and fail closed on malformed
+    ``ok`` values instead of letting a future producer silently leak through.
+    """
+    if not isinstance(out, dict) or "ok" not in out:
+        return {"ok": True, "result": out}
+    if out["ok"] is False:
+        return out
+    if out["ok"] is True:
+        if "result" in out:
+            return out
+        return {"ok": True, "result": {key: value for key, value in out.items() if key != "ok"}}
+    return {"ok": False, "code": "BRIDGE_PROTOCOL",
+            "error": "operation returned a non-boolean ok value"}
+
+
 def default_out_dir(prefix):
     """默认输出目录：~/.dsh/dsh-bio-galatea/out/<prefix>_<时间戳>（自动创建）。"""
     path = os.path.join(DATA_ROOT, "out", f"{prefix}_{time.strftime('%Y%m%d_%H%M%S')}")
@@ -206,16 +228,22 @@ def op_cluster(args):
 # ---------------------------------------------------------------------------
 def op_rank_consensus(args):
     from rank_tools import RankInputError, rank_consensus
+    from score_contract import ScoreContractError
     try:
         return {"ok": True, "result": rank_consensus(args)}
+    except ScoreContractError as exc:
+        return {"ok": False, "code": exc.code, "error": str(exc)}
     except (RankInputError, OSError) as exc:
         return {"ok": False, "error": str(exc)}
 
 
 def op_rank_aggregate(args):
     from rank_tools import RankInputError, rank_aggregate
+    from score_contract import ScoreContractError
     try:
         return {"ok": True, "result": rank_aggregate(args)}
+    except ScoreContractError as exc:
+        return {"ok": False, "code": exc.code, "error": str(exc)}
     except (RankInputError, OSError) as exc:
         return {"ok": False, "error": str(exc)}
 
@@ -342,16 +370,13 @@ def main():
         return
     try:
         out = fn(args)
-        if isinstance(out, dict) and "ok" in out:
-            print(json.dumps(_sanitize_json(out), ensure_ascii=False))
-        else:
-            print(json.dumps(_sanitize_json({"ok": True, "result": out}), ensure_ascii=False))
+        print(json.dumps(_sanitize_json(_bridge_envelope(out)), ensure_ascii=False))
     except Exception as e:
-        # 捕获所有异常，恒返回 ok:true（traceback 写 stderr 头，TS 侧检测）
+        # Unexpected backend errors must also fail closed at the JSON bridge.
         sys.stderr.write("Traceback (most recent call last):\n")
         traceback.print_exc(file=sys.stderr)
-        print(json.dumps({"ok": True, "result": None,
-                          "error_hint": f"op {op} failed: {type(e).__name__}: {e}"},
+        print(json.dumps({"ok": False, "code": "BACKEND_EXCEPTION",
+                          "error": f"op {op} failed: {type(e).__name__}: {e}"},
                          ensure_ascii=False))
 
 

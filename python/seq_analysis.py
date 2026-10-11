@@ -19,8 +19,27 @@ def _clean_seq(seq):
     return "".join(c for c in str(seq).upper() if c in "ACDEFGHIKLMNPQRSTVWY")
 
 
+# 疏水矩方法契约（GL-1，2026-10-07 G 系列一期修正）
+#   v1（历史错误）：ang = 2πn/100 → 3.6°/残基（把「100°」当成了「100 等分一圈」）。
+#   v2（修正）：ang = 100°/残基（radians(100)*n）——Eisenberg 定义：理想 α 螺旋 3.6 残基/圈
+#      → 360°/3.6 = 100°/残基。
+#   一期不提供默认重现 v1 错误公式的兼容模式；v1 仅作为历史参考存在（不参与输出）。
+HYDROPHOBIC_MOMENT_METHOD = {
+    "id": "galatea.hydrophobic_moment",
+    "version": "2",
+    "angle_deg_per_residue": 100,
+    "window": 18,
+    "window_rule": "min(18, length)",
+    "aggregation": "max over all full windows",
+    "min_length": 6,
+    "scale": "Eisenberg consensus hydrophobicity",
+    "output_precision": 3,
+    "v1_note": "v1 历史错误公式（3.6°/残基，2πn/100）已废弃，不提供默认兼容模式",
+}
+
+
 def _hydrophobic_moment(seq, window=18):
-    """疏水矩（Eisenberg 标度，100°/残基，滑窗取最大）。
+    """疏水矩（Eisenberg 标度，**100°/残基**，滑窗取最大）——方法 v2。
 
     典型判读：两亲性螺旋 μ_h 高（>0.35 量级提示膜/界面两亲性）；无序序列低。
     """
@@ -29,11 +48,12 @@ def _hydrophobic_moment(seq, window=18):
         return None
     w = min(window, len(vals))
     best = 0.0
+    ang_step = math.radians(HYDROPHOBIC_MOMENT_METHOD["angle_deg_per_residue"])
     for i in range(0, len(vals) - w + 1):
         hx = 0.0
         hy = 0.0
         for n, v in enumerate(vals[i:i + w]):
-            ang = 2 * math.pi * n / 100.0
+            ang = ang_step * n
             hx += v * math.cos(ang)
             hy += v * math.sin(ang)
         mu = math.hypot(hx, hy) / w
@@ -146,6 +166,7 @@ def score_sequences(sequences):
             "molecular_weight_kda": round(pa.molecular_weight() / 1000.0, 2),
             "cys_count": seq.count("C"),
             "hydrophobic_moment_h18": _hydrophobic_moment(seq),
+            "hydrophobic_moment_method": HYDROPHOBIC_MOMENT_METHOD,
             "aggregation": agg,
             "low_complexity": _low_complexity(seq),
         })
